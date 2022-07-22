@@ -1,0 +1,5 @@
+(library
+ (name ethernet)
+ (public_name ethernet)
+ (libraries cstruct macaddr mirage-net logs lwt mirage-profile)
+ (preprocess (pps ppx_cstruct)))

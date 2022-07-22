@@ -1,0 +1,3 @@
+(lang dune 2.8)
+(name mirage-clock)
+(version v4.2.0)

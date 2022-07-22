@@ -1,0 +1,6 @@
+_build
+*.install
+.merlin
+duniverse
+*.locked
+_esy

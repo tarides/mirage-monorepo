@@ -1,4 +1,11 @@
 (executable
- (name http_server)
- (public_name http-server)
+ (name cohttp_server)
+ (public_name cohttp-server)
+ (modules cohttp_server)
  (libraries cohttp-eio eio_main))
+
+(executable
+ (name httpaf_server)
+ (public_name httpaf-server)
+ (modules httpaf_server)
+ (libraries httpaf-eio eio_main))

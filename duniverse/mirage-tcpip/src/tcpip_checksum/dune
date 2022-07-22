@@ -1,0 +1,12 @@
+(library
+ (name tcpip_checksum)
+ (public_name tcpip.checksum)
+ (modules tcpip_checksum)
+ (instrumentation
+  (backend bisect_ppx))
+ (libraries cstruct)
+ (foreign_stubs
+  (language c)
+  (names checksum_stubs)
+  (flags :standard))
+ (wrapped false))
