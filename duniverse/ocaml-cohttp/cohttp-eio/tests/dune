@@ -1,0 +1,24 @@
+(executable
+ (name test_server)
+ (modules test_server)
+ (libraries cohttp_eio eio_main fmt))
+
+(executable
+ (name test_chunk_server)
+ (modules test_chunk_server)
+ (libraries cohttp_eio eio_main fmt))
+
+(executable
+ (name crlf)
+ (modules crlf)
+ (libraries unix))
+
+(env
+ (_
+  (binaries
+   (test_server.exe as test-server)
+   crlf.exe
+   (test_chunk_server.exe as test-chunk-server))))
+
+(cram
+ (deps %{bin:test-server} %{bin:test-chunk-server} %{bin:crlf}))

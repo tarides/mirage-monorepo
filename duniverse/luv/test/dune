@@ -1,0 +1,8 @@
+(executable
+ (name tester)
+ (libraries alcotest luv luv_unix threads))
+
+(rule
+ (alias runtest)
+ (deps read_test_input)
+ (action (run %{exe:tester.exe})))

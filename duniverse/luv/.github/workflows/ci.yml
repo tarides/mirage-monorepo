@@ -1,0 +1,48 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  opam:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+        ocaml:
+          - 4.13.1
+          - 4.02.3
+        include:
+          - os: macos-latest
+            ocaml: 4.13.1
+          - os: windows-latest
+            ocaml: 4.13.1
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: recursive
+      - uses: ocaml/setup-ocaml@v2
+        with:
+          ocaml-version: ${{ matrix.ocaml }}
+      - run: opam depext -y conf-pkg-config
+      - run: opam install -y --deps-only .
+      - run: opam exec -- dune build -p luv
+
+  esy:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: recursive
+      - run: npm install esy
+      - run: npx esy install
+      - run: npx esy build

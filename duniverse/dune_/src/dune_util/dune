@@ -1,0 +1,9 @@
+(library
+ (name dune_util)
+ (libraries
+  stdune
+  xdg
+  build_path_prefix_map
+  dune_sexp
+  memo
+  (re_export unix)))

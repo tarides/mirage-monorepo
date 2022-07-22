@@ -1,0 +1,4 @@
+(executable
+ (name http_server)
+ (public_name http-server)
+ (libraries cohttp-eio eio_main))

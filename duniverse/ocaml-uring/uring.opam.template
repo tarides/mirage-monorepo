@@ -1,0 +1,4 @@
+depexts: [
+  ["linux-headers"] {os-distribution = "alpine"}
+]
+available: [os = "linux"]

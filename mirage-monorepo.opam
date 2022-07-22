@@ -1,0 +1,32 @@
+opam-version: "2.0"
+synopsis: "A Multicore OCaml Monorepo"
+maintainer: ["patrick@sirref.org"]
+authors: ["patrick@sirref.org"]
+homepage: "https://github.com/patricoferris/ocaml-multicore-monorepo"
+bug-reports: "https://github.com/patricoferris/ocaml-multicore-monorepo/issues"
+depends: [
+  "ocaml" {= "5.0.0" }
+  "dune" {>= "2.9.2"}
+  "cohttp-eio"
+  "eio_main"
+]
+build: [
+  ["dune" "subst"] {pinned}
+  [
+    "dune"
+    "build"
+    "-p"
+    name
+    "-j"
+    jobs
+    "@install"
+    "@runtest" {with-test}
+    "@doc" {with-doc}
+  ]
+]
+dev-repo: "git+https://github.com/patricoferris/ocaml-multicore-monorepo.git"
+pin-depends: [
+  "cohttp.dev" "git+https://github.com/mirage/ocaml-cohttp.git"
+  "cohttp-eio.dev" "git+https://github.com/mirage/ocaml-cohttp.git"
+  "http.dev" "git+https://github.com/mirage/ocaml-cohttp.git"
+]
