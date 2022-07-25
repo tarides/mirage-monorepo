@@ -181,31 +181,36 @@ let process cache ts (packet : Ipv4_packet.t) payload =
         else
           maybe_add_to_cache cache', None
 
+
+
+let rec splitv current_buffers saved_buffers = function
+| 0 -> (List.rev saved_buffers, current_buffers)
+| n ->
+  match current_buffers with
+  | [] -> (List.rev saved_buffers, [])
+  | t :: rest when n >= t.Cstruct.len -> splitv rest (t :: saved_buffers) (n - t.len)
+  | t :: rest -> (List.rev (Cstruct.sub t 0 n :: saved_buffers), Cstruct.shift t n :: rest)
+
 (* TODO hdr.options is a Cstruct.t atm, but instead we need to parse all the
    options, and distinguish based on the first bit -- only these with the bit
    set should be copied into all fragments (see RFC 791, 3.1, page 15) *)
 let fragment ~mtu hdr payload =
-  let rec frag1 acc hdr hdr_buf offset data_size payload =
-    let more = Cstruct.length payload > data_size in
+  let rec frag1 acc hdr offset data_size payload =
+    let more = Cstruct.lenv payload > data_size in
     let hdr' =
       (* off is 16 bit of IPv4 header, 0x2000 sets the more fragments bit *)
       let off = (offset / 8) lor (if more then 0x2000 else 0) in
       { hdr with Ipv4_packet.off }
     in
     let this_payload, rest =
-      if more then Cstruct.split payload data_size else payload, Cstruct.empty
+      if more then splitv payload [] data_size else payload, []
     in
-    let payload_len = Cstruct.length this_payload in
-    Ipv4_wire.set_ipv4_csum hdr_buf 0;
-    (match Ipv4_packet.Marshal.into_cstruct ~payload_len hdr' hdr_buf with
-     (* hdr_buf is allocated with hdr_size (computed below) bytes, thus
-        into_cstruct will never return an error! *)
-     | Error msg -> invalid_arg msg
-     | Ok () -> ());
-    let acc' = Cstruct.append hdr_buf this_payload :: acc in
+    let payload_len = Cstruct.lenv this_payload in
+    let hdr_buf = Ipv4_packet.Marshal.make_cstruct ~payload_len hdr' in
+    let acc' = (hdr_buf :: this_payload) :: acc in
     if more then
       let offset = offset + data_size in
-      (frag1[@tailcall]) acc' hdr hdr_buf offset data_size rest
+      (frag1[@tailcall]) acc' hdr offset data_size rest
     else
       acc'
   in
@@ -221,4 +226,4 @@ let fragment ~mtu hdr payload =
   if data_size <= 0 then
     []
   else
-    List.rev (frag1 [] hdr (Cstruct.create hdr_size) data_size data_size payload)
+    List.rev (frag1 [] hdr data_size data_size payload)

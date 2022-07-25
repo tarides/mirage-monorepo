@@ -103,9 +103,9 @@ let maybe_raise_exs t =
   | None -> ()
   | Some (ex, bt) -> Printexc.raise_with_backtrace ex bt
 
-let create cancel =
+let create ?label cancel =
   let id = Ctf.mint_id () in
-  Ctf.note_created id Ctf.Switch;
+  Ctf.note_created ?label id Ctf.Switch;
   {
     id;
     fibers = 0;
@@ -132,12 +132,12 @@ let run_internal t fn =
     maybe_raise_exs t;
     assert false
 
-let run fn = Cancel.sub (fun cc -> run_internal (create cc) fn)
+let run ?label fn = Cancel.sub (fun cc -> run_internal (create ?label cc) fn)
 
-let run_protected fn =
+let run_protected ?label fn =
   let ctx = Effect.perform Cancel.Get_context in
   Cancel.with_cc ~ctx ~parent:ctx.cancel_context ~protected:true @@ fun cancel ->
-  run_internal (create cancel) fn
+  run_internal (create ?label cancel) fn
 
 (* Run [fn ()] in [t]'s cancellation context.
    This prevents [t] from finishing until [fn] is done,

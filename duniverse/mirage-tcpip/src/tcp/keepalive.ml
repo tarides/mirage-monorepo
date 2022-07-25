@@ -49,43 +49,53 @@ let next ~configuration ~ns state =
       end
   end
 
-  module Make(T:Mirage_time.S)(Clock:Mirage_clock.MCLOCK) = struct
+  module Make(Clock:Mirage_clock.MCLOCK) = struct
     type t = {
       configuration: Tcpip.Tcp.Keepalive.t;
-      callback: ([ `SendProbe | `Close ] -> unit Lwt.t);
+      callback: ([ `SendProbe | `Close ] -> unit);
+      clock: Eio.Time.clock;
       mutable state: state;
-      mutable timer: unit Lwt.t;
+      mutable cancel: unit Eio.Promise.u;
       mutable start: int64;
     }
     (** A keep-alive timer *)
 
     let rec restart t =
-      let open Lwt.Infix in
       let ns = Int64.sub (Clock.elapsed_ns ()) t.start in
       match next ~configuration:t.configuration ~ns t.state with
       | `Wait ns, state ->
-        T.sleep_ns ns >>= fun () ->
+        Eio.Time.sleep t.clock (Int64.to_float ns /. 1_000_000_000.);
         t.state <- state;
         restart t
       | `SendProbe, state ->
-        t.callback `SendProbe >>= fun () ->
+        t.callback `SendProbe;
         t.state <- state;
         restart t
       | `Close, _ ->
-        t.callback `Close >>= fun () ->
-        Lwt.return_unit
+        t.callback `Close;
+        ()
 
-    let create configuration callback =
+    let create ~sw ~clock configuration callback =
       let state = alive in
-      let timer = Lwt.return_unit in
       let start = Clock.elapsed_ns () in
-      let t = { configuration; callback; state; timer; start } in
-      t.timer <- restart t;
+      let promise_cancel, cancel = Eio.Promise.create ~label:"keepalive" () in
+      let t = { configuration; callback; state; cancel; clock; start } in
+      Eio.Fiber.fork ~sw (fun () ->
+        Eio.Fiber.any ~label:"tcp.keepalive.create" [
+          (fun () -> Eio.Promise.await promise_cancel);
+          (fun () -> restart t)
+        ]);
       t
 
-    let refresh t =
+    let refresh ~sw t =
       t.start <- Clock.elapsed_ns ();
       t.state <- alive;
-      Lwt.cancel t.timer;
-      t.timer <- restart t
+      let promise_cancel, cancel = Eio.Promise.create ~label:"keepalive" () in
+      t.cancel <- cancel;
+      Eio.Promise.resolve t.cancel ();
+      Eio.Fiber.fork ~sw (fun () ->
+        Eio.Fiber.any ~label:"tcp.keepalive.refresh" [
+          (fun () -> Eio.Promise.await promise_cancel);
+          (fun () -> restart t)
+        ])
   end

@@ -14,16 +14,23 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
-module type M =
-sig
+(* General signature for all the ack modules *)
+module type M = sig
   type t
-  val t : send_ack:Sequence.t Lwt_mvar.t -> last:Sequence.t -> t
 
-  val receive : t -> Sequence.t -> unit Lwt.t
-  val pushack : t -> Sequence.t -> unit Lwt.t
-  val transmit : t -> Sequence.t -> unit Lwt.t
+  (* ack: put mvar to trigger the transmission of an ack *)
+  val t : sw:Eio.Switch.t -> clock:Eio.Time.clock -> send_ack:Sequence.t Eio.Stream.t -> last:Sequence.t -> t
+
+  (* called when new data is received *)
+  val receive: t -> Sequence.t -> unit
+
+  (* called when new data is received *)
+  val pushack: t -> Sequence.t -> unit
+
+  (* called when an ack is transmitted from elsewhere *)
+  val transmit: t -> Sequence.t -> unit
 end
 
 module Immediate : M
 
-module Delayed(T:Mirage_time.S) : M
+module Delayed : M

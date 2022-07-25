@@ -1,4 +1,3 @@
-version: "3.0.0"
 opam-version: "2.0"
 maintainer:   "mirageos-devel@lists.xenproject.org"
 homepage:     "https://github.com/mirage/ethernet"

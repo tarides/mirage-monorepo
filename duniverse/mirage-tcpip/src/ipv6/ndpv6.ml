@@ -218,8 +218,6 @@ module Allocate = struct
       Ipv6_wire.set_rs_reserved icmpbuf 0l;
       if include_slla then begin
         let optbuf = Cstruct.shift icmpbuf Ipv6_wire.sizeof_rs in
-        Ipv6_wire.set_llopt_ty optbuf 1;
-        Ipv6_wire.set_llopt_len optbuf 1;
         macaddr_to_cstruct_raw mac optbuf 2
       end;
       Ipv6_wire.set_icmpv6_csum icmpbuf 0;
@@ -269,10 +267,6 @@ type na =
     na_override : bool;
     na_target : Ipaddr.t;
     na_tlla : Macaddr.t option }
-
-type redirect =
-  { target : Ipaddr.t;
-    destination : Ipaddr.t }
 
 type action =
   | SendNS of [`Unspecified | `Specified ] * ipaddr * ipaddr
@@ -506,29 +500,29 @@ module NeighborCache = struct
     match nb.state with
     | INCOMPLETE (t, tn) when t <= now ->
       if tn < Defaults.max_multicast_solicit then begin
-        Log.debug (fun f -> f "NUD: %a --> INCOMPLETE [Timeout]" Ipaddr.pp ip);
+        Log.info (fun f -> f "NUD: %a --> INCOMPLETE [Timeout]" Ipaddr.pp ip);
         let dst = Ipaddr.Prefix.network_address solicited_node_prefix ip in
         IpMap.add ip {nb with state = INCOMPLETE ((Int64.add now retrans_timer), tn+1)} nc,
         [SendNS (`Specified, dst, ip)]
       end else begin
-        Log.debug (fun f -> f "NUD: %a --> UNREACHABLE [Discarding]" Ipaddr.pp ip);
+        Log.info (fun f -> f "NUD: %a --> UNREACHABLE [Discarding]" Ipaddr.pp ip);
         (* TODO Generate ICMP error: Destination Unreachable *)
         IpMap.remove ip nc, [CancelQueued ip]
       end
     | REACHABLE (t, mac) when t <= now ->
-      Log.debug (fun f -> f "NUD: %a --> STALE" Ipaddr.pp ip);
+      Log.info (fun f -> f "NUD: %a --> STALE" Ipaddr.pp ip);
       IpMap.add ip {nb with state = STALE mac} nc, []
     | DELAY (t, dmac) when t <= now ->
-      Log.debug (fun f -> f "NUD: %a --> PROBE" Ipaddr.pp ip);
+      Log.info (fun f -> f "NUD: %a --> PROBE" Ipaddr.pp ip);
       IpMap.add ip {nb with state = PROBE ((Int64.add now retrans_timer), 0, dmac)} nc,
       [SendNS (`Specified, ip, ip)]
     | PROBE (t, tn, dmac) when t <= now ->
       if tn < Defaults.max_unicast_solicit then begin
-        Log.debug (fun f -> f "NUD: %a --> PROBE [Timeout]" Ipaddr.pp ip);
+        Log.info (fun f -> f "NUD: %a --> PROBE [Timeout]" Ipaddr.pp ip);
         IpMap.add ip {nb with state = PROBE ((Int64.add now retrans_timer), tn+1, dmac)} nc,
         [SendNS (`Specified, ip, ip)]
       end else begin
-        Log.debug (fun f -> f "NUD: %a --> UNREACHABLE [Discarding]" Ipaddr.pp ip);
+        Log.info (fun f -> f "NUD: %a --> UNREACHABLE [Discarding]" Ipaddr.pp ip);
         IpMap.remove ip nc, []
       end
     | _ ->
@@ -559,7 +553,7 @@ module NeighborCache = struct
     IpMap.add src nb nc, acts
 
   let handle_ra nc ~src new_mac =
-    Log.debug (fun f -> f "ND6: Processing SLLA option in RA");
+    Log.info (fun f -> f "ND6: Processing SLLA option in RA");
     let nb =
       try
         let nb = IpMap.find src nc in
@@ -582,11 +576,11 @@ module NeighborCache = struct
     let update nb =
       match nb.state, new_mac, sol, ovr with
       | INCOMPLETE _, Some new_mac, false, _ ->
-        Log.debug (fun f -> f "NUD: %a --> STALE" Ipaddr.pp tgt);
+        Log.info (fun f -> f "NUD: %a --> STALE" Ipaddr.pp tgt);
         let nb = {nb with state = STALE new_mac} in
         IpMap.add tgt nb nc, [SendQueued (tgt, new_mac)]
       | INCOMPLETE _, Some new_mac, true, _ ->
-        Log.debug (fun f -> f "NUD: %a --> REACHABLE" Ipaddr.pp tgt);
+        Log.info (fun f -> f "NUD: %a --> REACHABLE" Ipaddr.pp tgt);
         let nb = {nb with state = REACHABLE ((Int64.add now reachable_time), new_mac)} in
         IpMap.add tgt nb nc, [SendQueued (tgt, new_mac)]
       | INCOMPLETE _, None, _, _ ->
@@ -598,11 +592,11 @@ module NeighborCache = struct
         in
         nc, []
       | PROBE (_, _, mac), Some new_mac, true, false when mac = new_mac ->
-        Log.debug (fun f -> f "NUD: %a --> REACHABLE" Ipaddr.pp tgt);
+        Log.info (fun f -> f "NUD: %a --> REACHABLE" Ipaddr.pp tgt);
         let nb = {nb with state = REACHABLE ((Int64.add now reachable_time), new_mac)} in
         IpMap.add tgt nb nc, []
       | PROBE (_, _, mac), None, true, false ->
-        Log.debug (fun f -> f "NUD: %a --> REACHABLE" Ipaddr.pp tgt);
+        Log.info (fun f -> f "NUD: %a --> REACHABLE" Ipaddr.pp tgt);
         let nb = {nb with state = REACHABLE ((Int64.add now reachable_time), mac)} in
         IpMap.add tgt nb nc, []
       | (REACHABLE _ | STALE _ | DELAY _ | PROBE _), None, _, _ ->
@@ -614,16 +608,16 @@ module NeighborCache = struct
         in
         nc, []
       | REACHABLE (_, mac), Some new_mac, true, false when mac <> new_mac ->
-        Log.debug (fun f -> f "NUD: %a --> STALE" Ipaddr.pp tgt);
+        Log.info (fun f -> f "NUD: %a --> STALE" Ipaddr.pp tgt);
         let nb = {nb with state = STALE mac} in (* TODO check mac or new_mac *)
         IpMap.add tgt nb nc, []
       | (REACHABLE _ | STALE _ | DELAY _ | PROBE _), Some new_mac, true, true ->
-        Log.debug (fun f -> f "NUD: %a --> REACHABLE" Ipaddr.pp tgt);
+        Log.info (fun f -> f "NUD: %a --> REACHABLE" Ipaddr.pp tgt);
         let nb = {nb with state = REACHABLE ((Int64.add now reachable_time), new_mac)} in
         IpMap.add tgt nb nc, []
       | (REACHABLE (_, mac) | STALE mac | DELAY (_, mac) | PROBE (_, _, mac)),
         Some new_mac, false, true when mac <> new_mac ->
-        Log.debug (fun f -> f "NUD: %a --> STALE" Ipaddr.pp tgt);
+        Log.info (fun f -> f "NUD: %a --> STALE" Ipaddr.pp tgt);
         let nb = {nb with state = STALE mac} in
         IpMap.add tgt nb nc, []
       | _ ->
@@ -699,7 +693,7 @@ module RouterList = struct
       end
     | false ->
       if lft > 0L then begin
-        Log.debug (fun f -> f "RA: Adding Router: src=%a" Ipaddr.pp src);
+	Log.info (fun f -> f "RA: Adding Router: src=%a" Ipaddr.pp src);
         (add rl ~now ~lifetime:lft src), []
       end else
         rl, []
@@ -845,11 +839,6 @@ module Parser = struct
     in
     {na_router; na_solicited; na_override; na_target; na_tlla}
 
-  let parse_redirect buf =
-    let destination = ipaddr_of_cstruct (Ipv6_wire.get_redirect_destination buf) in
-    let target = ipaddr_of_cstruct (Ipv6_wire.get_redirect_target buf) in
-    { target; destination }
-
   let dst_unreachable icmpbuf =
     match Ipv6_wire.get_icmpv6_code icmpbuf with
     | 0 -> "No route to destination"
@@ -890,6 +879,7 @@ module Parser = struct
         Ping (src, dst, id, seq, Cstruct.shift icmpbuf 8)
       | 129 (* Echo reply *) ->
         Pong (Cstruct.shift buf poff)
+      (* Log.info (fun f -> f "ICMP6: Discarding Echo Reply"; *)
       | 133 (* RS *) ->
         (* RFC 4861, 2.6.2 *)
         Drop
@@ -917,15 +907,6 @@ module Parser = struct
             Drop
           else
             NA (src, dst, na)
-      | 137 (* Redirect *) ->
-        if Ipv6_wire.get_ipv6_hlim buf <> 255 then
-          Drop
-        else
-          let redirect = parse_redirect icmpbuf in
-          Log.info (fun f -> f "ICMP6 Redirect: %a via %a"
-                       Ipaddr.pp redirect.destination
-                       Ipaddr.pp redirect.target);
-          Drop
       | 1 ->
         Log.info (fun f -> f "ICMP6 Destination Unreachable: %s" (dst_unreachable icmpbuf));
         Drop
@@ -946,12 +927,12 @@ module Parser = struct
   let rec parse_extension ~src ~dst buf first hdr (poff : int) =
     match hdr with
     | 0 (* HOPTOPT *) when first ->
-      Log.debug (fun f -> f "IP6: Processing HOPOPT header");
+      Log.info (fun f -> f "IP6: Processing HOPOPT header");
       parse_options ~src ~dst buf poff
     | 0 ->
       Drop
     | 60 (* IPv6-Opts *) ->
-      Log.debug (fun f -> f "IP6: Processing DESTOPT header");
+      Log.info (fun f -> f "IP6: Processing DESTOPT header");
       parse_options ~src ~dst buf poff
     | 43 (* IPv6-Route *)
     | 44 (* IPv6-Frag *)
@@ -982,10 +963,10 @@ module Parser = struct
         let obuf = Cstruct.shift buf ooff in
         match Ipv6_wire.get_opt_ty obuf with
         | 0 ->
-          Log.debug (fun f -> f "IP6: Processing PAD1 option");
+          Log.info (fun f -> f "IP6: Processing PAD1 option");
           loop (ooff+1)
         | 1 ->
-          Log.debug (fun f -> f "IP6: Processing PADN option");
+          Log.info (fun f -> f "IP6: Processing PADN option");
           let len = Ipv6_wire.get_opt_len obuf in
           loop (ooff+len+2)
         | _ as n ->

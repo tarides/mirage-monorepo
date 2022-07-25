@@ -83,7 +83,7 @@ val process : Cache.t -> int64 -> Ipv4_packet.t -> Cstruct.t -> Cache.t *
    header and payload is directly returned. Handles out-of-order fragments
    gracefully. *)
 
-val fragment : mtu:int -> Ipv4_packet.t -> Cstruct.t -> Cstruct.t list
+val fragment : mtu:int -> Ipv4_packet.t -> Cstruct.t list -> Cstruct.t list list
 (** [fragment ~mtu hdr payload] is called with the IPv4 header of the first
     fragment and the remaining payload (which did not fit into the first
     fragment). The [data_length = ((mtu - header_length hdr) / 8) * 8] is used

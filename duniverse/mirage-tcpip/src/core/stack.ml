@@ -3,7 +3,7 @@ module type V4 = sig
   type t
   (** The type representing the internal state of the IPv4 stack. *)
 
-  val disconnect: t -> unit Lwt.t
+  val disconnect: t -> unit
   (** Disconnect from the IPv4 stack. While this might take some time to
       complete, it can never result in an error. *)
 
@@ -26,26 +26,7 @@ module type V4 = sig
       which can handle raw IPv4 frames, or manipulate IP address
       configuration on the stack interface. *)
 
-  val listen_udpv4: t -> port:int -> UDPV4.callback -> unit
-  [@@ocaml.deprecated "use UDPV4.listen instead (since mirage-protocols 6.0.0)."]
-  (** [listen_udpv4 t ~port cb] registers the [cb] callback on the
-      UDPv4 [port] and immediately return.  If [port] is invalid (not
-      between 0 and 65535 inclusive), it raises [Invalid_argument].
-      Multiple bindings to the same port will overwrite previous
-      bindings, so callbacks will not chain if ports clash. *)
-
-  val listen_tcpv4: ?keepalive:Tcp.Keepalive.t
-    -> t -> port:int -> (TCPV4.flow -> unit Lwt.t) -> unit
-  [@@ocaml.deprecated "use TCPV4.listen instead (since mirage-protocols 6.0.0)."]
-  (** [listen_tcpv4 ~keepalive t ~port cb] registers the [cb] callback
-      on the TCPv4 [port] and immediately return.  If [port] is invalid (not
-      between 0 and 65535 inclusive), it raises [Invalid_argument].
-      Multiple bindings to the same port will overwrite previous
-      bindings, so callbacks will not chain if ports clash.
-      If [~keepalive] is provided then these keepalive settings will be
-      applied to the accepted connections before the callback is called. *)
-
-  val listen: t -> unit Lwt.t
+  val listen: t -> unit
   (** [listen t] requests that the stack listen for traffic on the
       network interface associated with the stack, and demultiplex
       traffic to the appropriate callbacks. *)
@@ -55,7 +36,7 @@ module type V6 = sig
   type t
   (** The type representing the internal state of the IPv6 stack. *)
 
-  val disconnect: t -> unit Lwt.t
+  val disconnect: t -> unit
   (** Disconnect from the IPv6 stack. While this might take some time to
       complete, it can never result in an error. *)
 
@@ -78,26 +59,7 @@ module type V6 = sig
       which can handle raw IPv6 frames, or manipulate IP address
       configuration on the stack interface. *)
 
-  val listen_udp: t -> port:int -> UDP.callback -> unit
-  [@@ocaml.deprecated "use UDP.listen instead (since mirage-protocols 6.0.0)."]
-  (** [listen_udp t ~port cb] registers the [cb] callback on the
-      UDPv6 [port] and immediately return.  If [port] is invalid (not
-      between 0 and 65535 inclusive), it raises [Invalid_argument].
-      Multiple bindings to the same port will overwrite previous
-      bindings, so callbacks will not chain if ports clash. *)
-
-  val listen_tcp: ?keepalive:Tcp.Keepalive.t
-    -> t -> port:int -> (TCP.flow -> unit Lwt.t) -> unit
-  [@@ocaml.deprecated "use TCP.listen instead (since mirage-protocols 6.0.0)."]
-  (** [listen_tcp ~keepalive t ~port cb] registers the [cb] callback
-      on the TCPv6 [port] and immediately return.  If [port] is invalid (not
-      between 0 and 65535 inclusive), it raises [Invalid_argument].
-      Multiple bindings to the same port will overwrite previous
-      bindings, so callbacks will not chain if ports clash.
-      If [~keepalive] is provided then these keepalive settings will be
-      applied to the accepted connections before the callback is called. *)
-
-  val listen: t -> unit Lwt.t
+  val listen: t -> unit
   (** [listen t] requests that the stack listen for traffic on the
       network interface associated with the stack, and demultiplex
       traffic to the appropriate callbacks. *)
@@ -107,7 +69,7 @@ module type V4V6 = sig
   type t
   (** The type representing the internal state of the dual IPv4 and IPv6 stack. *)
 
-  val disconnect: t -> unit Lwt.t
+  val disconnect: t -> unit
   (** Disconnect from the dual IPv4 and IPv6 stack. While this might take some
       time to complete, it can never result in an error. *)
 
@@ -130,26 +92,7 @@ module type V4V6 = sig
       which can handle raw IPv4 and IPv6 frames, or manipulate IP address
       configuration on the stack interface. *)
 
-  val listen_udp: t -> port:int -> UDP.callback -> unit
-  [@@ocaml.deprecated "use UDP.listen instead (since mirage-protocols 6.0.0)."]
-  (** [listen_udp t ~port cb] registers the [cb] callback on the
-      UDP [port] and immediately return.  If [port] is invalid (not
-      between 0 and 65535 inclusive), it raises [Invalid_argument].
-      Multiple bindings to the same port will overwrite previous
-      bindings, so callbacks will not chain if ports clash. *)
-
-  val listen_tcp: ?keepalive:Tcp.Keepalive.t
-    -> t -> port:int -> (TCP.flow -> unit Lwt.t) -> unit
-  [@@ocaml.deprecated "use TCP.listen instead (since mirage-protocols 6.0.0)."]
-  (** [listen_tcp ~keepalive t ~port cb] registers the [cb] callback
-      on the TCP [port] and immediately return.  If [port] is invalid (not
-      between 0 and 65535 inclusive), it raises [Invalid_argument].
-      Multiple bindings to the same port will overwrite previous
-      bindings, so callbacks will not chain if ports clash.
-      If [~keepalive] is provided then these keepalive settings will be
-      applied to the accepted connections before the callback is called. *)
-
-  val listen: t -> unit Lwt.t
+  val listen: t -> unit
   (** [listen t] requests that the stack listen for traffic on the
       network interface associated with the stack, and demultiplex
       traffic to the appropriate callbacks. *)

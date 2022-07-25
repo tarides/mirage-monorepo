@@ -15,9 +15,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
-[@@@ocaml.warning "-3"]
-
-open Lwt.Infix
+module Lwt = struct end
 
 let lwt_sequence_add_l s seq =
   let (_:'a Lwt_dllist.node) = Lwt_dllist.add_l s seq in
@@ -34,9 +32,9 @@ module Rx = struct
   type t = {
     q: Cstruct.t option Lwt_dllist.t;
     wnd: Window.t;
-    writers: unit Lwt.u Lwt_dllist.t;
-    readers: Cstruct.t option Lwt.u Lwt_dllist.t;
-    mutable watcher: int32 Lwt_mvar.t option;
+    writers: unit Eio.Promise.u Lwt_dllist.t;
+    readers: Cstruct.t option Eio.Promise.u Lwt_dllist.t;
+    mutable watcher: int32 Eio.Stream.t option;
     mutable max_size: int32;
     mutable cur_size: int32;
   }
@@ -53,8 +51,8 @@ module Rx = struct
     let rx_wnd = max 0l (Int32.sub t.max_size t.cur_size) in
     Window.set_rx_wnd t.wnd rx_wnd;
     match t.watcher with
-    |None   -> Lwt.return_unit
-    |Some w -> Lwt_mvar.put w t.cur_size
+    | None   -> ()
+    | Some w -> Eio.Stream.add w t.cur_size
 
   let seglen s =
     match s with
@@ -62,40 +60,46 @@ module Rx = struct
     | Some b -> Cstruct.length b
 
   let add_r t s =
+    assert ((Domain.self () :> int) = 0);
     if t.cur_size > t.max_size then
-      let th,u = MProf.Trace.named_task "User_buffer.add_r" in
-      let node = Lwt_dllist.add_r u t.writers in
-      Lwt.on_cancel th (fun _ -> Lwt_dllist.remove node);
+      let th, u = Eio.Promise.create ~label:"User_buffer.add_r" () in
+      let _node = Lwt_dllist.add_r u t.writers in
+      
+      (*Lwt.on_cancel th (fun _ -> Lwt_dllist.remove node);*)
+
       (* Update size before blocking, which may push cur_size above max_size *)
       t.cur_size <- Int32.(add t.cur_size (of_int (seglen s)));
-      notify_size_watcher t >>= fun () ->
-      th >>= fun () ->
+      notify_size_watcher t;
+      Eio.Promise.await th;
       ignore(Lwt_dllist.add_r s t.q);
-      Lwt.return_unit
+      ()
     else match Lwt_dllist.take_opt_l t.readers with
       | None ->
         t.cur_size <- Int32.(add t.cur_size (of_int (seglen s)));
         ignore(Lwt_dllist.add_r s t.q);
         notify_size_watcher t
       | Some u ->
-        Lwt.return (Lwt.wakeup u s)
+        (Eio.Promise.resolve u s)
+
+
+  let label = "User_buffer.take_l"
 
   let take_l t =
     if Lwt_dllist.is_empty t.q then begin
-      let th,u = MProf.Trace.named_task "User_buffer.take_l" in
-      let node = Lwt_dllist.add_r u t.readers in
-      Lwt.on_cancel th (fun _ -> Lwt_dllist.remove node);
-      th
+      let th,u = Eio.Promise.create ~label () in
+      let _node = Lwt_dllist.add_r u t.readers in
+      (*Lwt.on_cancel th (fun _ -> Lwt_dllist.remove node);*)
+      Eio.Promise.await th
     end else begin
       let s = Lwt_dllist.take_l t.q in
       t.cur_size <- Int32.(sub t.cur_size (of_int (seglen s)));
-      notify_size_watcher t >>= fun () ->
+      notify_size_watcher t;
       if t.cur_size < t.max_size then begin
         match Lwt_dllist.take_opt_l t.writers with
         |None -> ()
-        |Some w -> Lwt.wakeup w ()
+        |Some w -> Eio.Promise.resolve w ()
       end;
-      Lwt.return s
+      s
     end
 
   let cur_size t = t.cur_size
@@ -111,13 +115,13 @@ end
    to decide how to throttle or breakup its data production with this
    information.
 *)
-module Tx(Time:Mirage_time.S)(Clock:Mirage_clock.MCLOCK) = struct
+module Tx(Clock:Mirage_clock.MCLOCK) = struct
 
-  module TXS = Segment.Tx(Time)(Clock)
+  module TXS = Segment.Tx(Clock)
 
   type t = {
     wnd: Window.t;
-    writers: unit Lwt.u Lwt_dllist.t;
+    writers: unit Eio.Promise.u Lwt_dllist.t;
     txq: TXS.t;
     buffer: Cstruct.t Lwt_dllist.t;
     max_size: int32;
@@ -153,13 +157,13 @@ module Tx(Time:Mirage_time.S)(Clock:Mirage_clock.MCLOCK) = struct
   (* Wait until at least sz bytes are available in the window *)
   let rec wait_for t sz =
     if (available t) >= sz then begin
-      Lwt.return_unit
+      ()
     end
     else begin
-      let th,u = MProf.Trace.named_task "User_buffer.wait_for" in
-      let node = Lwt_dllist.add_r u t.writers in
-      Lwt.on_cancel th (fun _ -> Lwt_dllist.remove node);
-      th >>= fun () ->
+      let th,u = Eio.Promise.create ~label:"User_buffer.wait_for" () in
+      let _node = Lwt_dllist.add_r u t.writers in
+      (*Lwt.on_cancel th (fun _ -> Lwt_dllist.remove node);*)
+      Eio.Promise.await th;
       wait_for t sz
     end
 
@@ -168,13 +172,13 @@ module Tx(Time:Mirage_time.S)(Clock:Mirage_clock.MCLOCK) = struct
   (* Wait until the user buffer is flushed *)
   let rec wait_for_flushed t =
     if Lwt_dllist.is_empty t.buffer then begin
-      Lwt.return_unit
+      ()
     end
     else begin
-      let th,u = MProf.Trace.named_task "User_buffer.wait_for_flushed" in
-      let node = Lwt_dllist.add_r u t.writers in
-      Lwt.on_cancel th (fun _ -> Lwt_dllist.remove node);
-      th >>= fun () ->
+      let th,u = Eio.Promise.create ~label:"User_buffer.wait_for_flushed" () in
+      let _node = Lwt_dllist.add_r u t.writers in
+      (*Lwt.on_cancel th (fun _ -> Lwt_dllist.remove node);*)
+      Eio.Promise.await th;
       wait_for_flushed t
     end
 
@@ -219,13 +223,13 @@ module Tx(Time:Mirage_time.S)(Clock:Mirage_clock.MCLOCK) = struct
           Some [s]
     in
     match Lwt_dllist.is_empty t.buffer with
-    | true -> Lwt.return_unit
+    | true -> ()
     | false ->
       match get_pkt_to_send () with
-      | None -> Lwt.return_unit
+      | None -> ()
       | Some pkt ->
         let b = compactbufs pkt in
-        TXS.output ~flags:Segment.Psh t.txq b >>= fun () ->
+        TXS.output ~flags:Segment.Psh t.txq b;
         clear_buffer t
 
   (* Chunk up the segments into MSS max for transmission *)
@@ -238,7 +242,7 @@ module Tx(Time:Mirage_time.S)(Clock:Mirage_clock.MCLOCK) = struct
       match datav with
       |[] -> begin
           match acc with
-          |[] -> Lwt.return_unit
+          |[] -> ()
           |_ -> transmit acc
         end
       |hd::tl ->
@@ -246,7 +250,7 @@ module Tx(Time:Mirage_time.S)(Clock:Mirage_clock.MCLOCK) = struct
         let tlen = Cstruct.length hd + curlen in
         if tlen > mss then begin
           let a,b = Cstruct.split hd (mss - curlen) in
-          transmit (a::acc) >>= fun () ->
+          transmit (a::acc);
           chunk (b::tl) []
         end else
           chunk tl (hd::acc)
@@ -262,7 +266,7 @@ module Tx(Time:Mirage_time.S)(Clock:Mirage_clock.MCLOCK) = struct
       t.bufbytes <- Int32.add t.bufbytes l;
       List.iter (fun data -> ignore(Lwt_dllist.add_r data t.buffer)) datav;
       if t.bufbytes < mss then
-        Lwt.return_unit
+        ()
       else
         clear_buffer t
     | true ->
@@ -271,7 +275,7 @@ module Tx(Time:Mirage_time.S)(Clock:Mirage_clock.MCLOCK) = struct
       | true ->
         t.bufbytes <- Int32.add t.bufbytes l;
         List.iter (fun data -> ignore(Lwt_dllist.add_r data t.buffer)) datav;
-        Lwt.return_unit
+        ()
       | false ->
         let max_size = Window.tx_mss t.wnd in
         transmit_segments ~mss:max_size ~txq:t.txq datav
@@ -282,14 +286,14 @@ module Tx(Time:Mirage_time.S)(Clock:Mirage_clock.MCLOCK) = struct
     | false ->
       t.bufbytes <- Int32.add t.bufbytes l;
       List.iter (fun data -> ignore(Lwt_dllist.add_r data t.buffer)) datav;
-      Lwt.return_unit
+      ()
     | true ->
       let avail_len = available_cwnd t in
       match avail_len < l with
       | true ->
         t.bufbytes <- Int32.add t.bufbytes l;
         List.iter (fun data -> ignore(Lwt_dllist.add_r data t.buffer)) datav;
-        Lwt.return_unit
+        ()
       | false ->
         let max_size = Window.tx_mss t.wnd in
         transmit_segments ~mss:max_size ~txq:t.txq datav
@@ -297,18 +301,18 @@ module Tx(Time:Mirage_time.S)(Clock:Mirage_clock.MCLOCK) = struct
 
   let inform_app t =
     match Lwt_dllist.take_opt_l t.writers with
-    | None   -> Lwt.return_unit
+    | None   -> ()
     | Some w ->
-      Lwt.wakeup w ();
+      Eio.Promise.resolve w ();
       (* TODO: check if this should wake all writers not just one *)
-      Lwt.return_unit
+      ()
 
   (* Indicate that more bytes are available for waiting writers.
      Note that sz does not take window scaling into account, and so
      should be passed as unscaled (i.e. from the wire) here.
      Window will internally scale it up. *)
   let free t _sz =
-    clear_buffer t >>= fun () ->
+    clear_buffer t;
     inform_app t
 
   let reset t =

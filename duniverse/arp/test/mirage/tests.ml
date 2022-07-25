@@ -1,20 +1,16 @@
-open Lwt.Infix
+let time_reduction_factor = 600.
 
-let time_reduction_factor = 600
+let fast_clock clock: Eio.Time.clock =
+  object
+    method now = clock#now *. time_reduction_factor
 
-module Time = struct
-  type 'a io = 'a Lwt.t
-  let sleep_ns ns = Lwt_unix.sleep (Duration.to_f ns)
-end
-module Fast_time = struct
-  type 'a io = 'a Lwt.t
-  let sleep_ns time = Time.sleep_ns Int64.(div time (of_int time_reduction_factor))
-end
+    method sleep_until f = clock#sleep_until (f /. time_reduction_factor)
+  end
 
 module B = Basic_backend.Make
 module V = Vnetif.Make(B)
 module E = Ethernet.Make(V)
-module A = Arp.Make(E)(Fast_time)
+module A = Arp.Make(E)
 
 let src = Logs.Src.create "test_arp" ~doc:"Mirage ARP tester"
 module Log = (val Logs.src_log src : Logs.LOG)
@@ -57,9 +53,14 @@ let check_header ~message expected actual =
 let fail = Alcotest.fail
 let failf fmt = Fmt.kstr (fun s -> Alcotest.fail s) fmt
 
-let timeout ~time t =
+let timeout ~time ~clock t =
   let msg = Printf.sprintf "Timed out: didn't complete in %d milliseconds" time in
-  Lwt.pick [ t; Time.sleep_ns (Duration.of_ms time) >>= fun () -> fail msg; ]
+  Eio.Fiber.any [ 
+    t; 
+    fun () -> 
+      Eio.Time.sleep clock (Float.of_int time /. 1000.);
+      fail msg; 
+  ]
 
 let check_response expected buf =
   match Arp_packet.decode buf with
@@ -95,15 +96,16 @@ let single_check netif expected =
       match Ethernet.Packet.of_cstruct buf with
       | Error _ -> failwith "sad face"
       | Ok (_, payload) ->
-        check_response expected payload; V.disconnect netif) >|= fun _ -> ()
+        check_response expected payload; V.disconnect netif) |> ignore
 
 (*  { Ethernet_packet.source = arp.source_mac;
       destination = arp.target_mac;
       ethertype = `ARP;
     } *)
 
-let arp_reply ~from_netif ~to_netif ~from_ip ~to_ip arp =
+let arp_reply ~from_netif ~to_netif ~from_ip ~to_ip =
   let open Arp_packet in
+  let buffer = Cstruct.create Arp_packet.size in
   let a =
     { operation = Reply;
       source_mac = V.mac from_netif;
@@ -111,11 +113,12 @@ let arp_reply ~from_netif ~to_netif ~from_ip ~to_ip arp =
       source_ip = from_ip;
       target_ip = to_ip}
   in
-  encode_into a arp ;
-  Arp_packet.size
+  encode_into a buffer ;
+  buffer
 
-let arp_request ~from_netif ~to_mac ~from_ip ~to_ip arp =
+let arp_request ~from_netif ~to_mac ~from_ip ~to_ip =
   let open Arp_packet in
+  let buffer = Cstruct.create Arp_packet.size in
   let a =
     { operation = Request;
       source_mac = V.mac from_netif;
@@ -123,61 +126,55 @@ let arp_request ~from_netif ~to_mac ~from_ip ~to_ip arp =
       source_ip = from_ip;
       target_ip = to_ip}
   in
-  encode_into a arp ;
-  Arp_packet.size
+  encode_into a buffer;
+  buffer
 
-let get_arp ?backend () =
+let get_arp ~sw ~clock ?backend () =
   let backend = match backend with
-    | None -> B.create ~use_async_readers:true ~yield:Lwt.pause ()
+    | None -> B.create ~use_async_readers:sw ()
     | Some b -> b
   in
-  V.connect backend >>= fun netif ->
-  E.connect netif >>= fun ethif ->
-  A.connect ethif >>= fun arp ->
-  Lwt.return { backend; netif; ethif; arp }
+  let netif = V.connect backend in
+  let ethif = E.connect netif in
+  let arp = A.connect ~sw ~clock:(fast_clock clock) ethif in
+  { backend; netif; ethif; arp }
 
 (* we almost always want two stacks on the same backend *)
-let two_arp () =
-  get_arp () >>= fun first ->
-  get_arp ~backend:first.backend () >>= fun second ->
-  Lwt.return (first, second)
+let two_arp ~sw ~clock () =
+  let first = get_arp ~sw ~clock () in
+  let second = get_arp ~sw ~clock ~backend:first.backend () in
+  (first, second)
 
 (* ...but sometimes we want three *)
-let three_arp () =
-  get_arp () >>= fun first ->
-  get_arp ~backend:first.backend () >>= fun second ->
-  get_arp ~backend:first.backend () >>= fun third ->
-  Lwt.return (first, second, third)
+let three_arp ~sw ~clock () =
+  let first = get_arp ~sw ~clock () in
+  let second = get_arp ~sw ~clock ~backend:first.backend () in
+  let third = get_arp ~sw ~clock ~backend:first.backend () in
+  (first, second, third)
 
 let query_or_die arp ip expected_mac =
-  A.query arp ip >>= function
-  | Error `Timeout ->
+  match A.query arp ip with
+  | exception Arp.Timeout ->
     Log.warn (fun f -> f "Timeout querying %a. Table contents: %a"
                  Ipaddr.V4.pp ip A.pp arp);
     fail "ARP query failed when success was mandatory";
-  | Ok mac ->
-    Alcotest.(check macaddr) "mismatch for expected query value" expected_mac mac;
-    Lwt.return_unit
-  | Error e -> failf "ARP query failed with %a" A.pp_error e
+  | mac ->
+    Alcotest.(check macaddr) "mismatch for expected query value" expected_mac mac
 
 let query_and_no_response arp ip =
-  A.query arp ip >>= function
-  | Error `Timeout ->
-    Log.warn (fun f -> f "Timeout querying %a. Table contents: %a" Ipaddr.V4.pp ip A.pp arp);
-    Lwt.return_unit
-  | Ok _ -> failf "expected nothing, found something in cache"
-  | Error e ->
-    Log.err (fun m -> m "another err");
-    failf "ARP query failed with %a" A.pp_error e
+  match A.query arp ip with
+  | exception Arp.Timeout ->
+    Log.warn (fun f -> f "Timeout querying %a. Table contents: %a" Ipaddr.V4.pp ip A.pp arp)
+  | _ -> failf "expected nothing, found something in cache"
 
 let set_and_check ~listener ~claimant ip =
-  A.set_ips claimant.arp [ ip ] >>= fun () ->
+  A.set_ips claimant.arp [ ip ];
   Log.debug (fun f -> f "Set IP for %a to %a" Macaddr.pp (V.mac claimant.netif) Ipaddr.V4.pp ip);
   Logs.debug (fun f -> f "Listener table contents after IP set on claimant: %a" A.pp listener);
   query_or_die listener ip (V.mac claimant.netif)
 
 let start_arp_listener stack () =
-  let noop = (fun _ -> Lwt.return_unit) in
+  let noop = (ignore) in
   Log.debug (fun f -> f "starting arp listener for %a" Macaddr.pp (V.mac stack.netif));
   let arpv4 frame =
     Log.debug (fun f -> f "frame received for arpv4");
@@ -185,147 +182,142 @@ let start_arp_listener stack () =
   in
   E.input ~arpv4 ~ipv4:noop ~ipv6:noop stack.ethif
 
-let not_in_cache ~listen probe arp ip =
-  Lwt.pick [
-    single_check listen probe;
-    Time.sleep_ns (Duration.of_ms 100) >>= fun () ->
-    A.query arp ip >>= function
-    | Ok _ -> failf "entry in cache when it shouldn't be %a" Ipaddr.V4.pp ip
-    | Error `Timeout -> Lwt.return_unit
-    | Error e -> failf "error for %a while reading the cache: %a"
-                   Ipaddr.V4.pp ip A.pp_error e
+let not_in_cache ~clock ~listen probe arp ip =
+  Eio.Fiber.any [
+    (fun () -> single_check listen probe);
+    fun () -> 
+      Eio.Time.sleep clock 0.1;
+      match A.query arp ip with
+      | _ -> failf "entry in cache when it shouldn't be %a" Ipaddr.V4.pp ip
+      | exception Arp.Timeout -> ()
   ]
 
-let set_ip_sends_garp () =
-  two_arp () >>= fun (speak, listen) ->
-  let emit_garp =
-    Time.sleep_ns (Duration.of_ms 100) >>= fun () ->
-    A.set_ips speak.arp [ first_ip ] >>= fun () ->
-    Alcotest.(check (list ip)) "garp emitted when setting ip" [ first_ip ] (A.get_ips speak.arp);
-    Lwt.return_unit
+let set_ip_sends_garp ~sw ~clock () =
+  let (speak, listen) = two_arp ~sw ~clock () in
+  let emit_garp () =
+    Eio.Time.sleep clock 0.1;
+    A.set_ips speak.arp [ first_ip ];
+    Alcotest.(check (list ip)) "garp emitted when setting ip" [ first_ip ] (A.get_ips speak.arp)
   in
   let expected_garp = garp (V.mac speak.netif) first_ip in
-  timeout ~time:500 (
-  Lwt.join [
-    single_check listen.netif expected_garp;
+  timeout ~clock ~time:500 (fun () ->
+  Eio.Fiber.all [
+    (fun () -> single_check listen.netif expected_garp);
     emit_garp;
-  ]) >>= fun () ->
+  ]);
   (* now make sure we have consistency when setting *)
-  A.set_ips speak.arp [] >>= fun () ->
+  A.set_ips speak.arp [];
   Alcotest.(check (slist ip Ipaddr.V4.compare)) "list of bound IPs on initialization" [] (A.get_ips speak.arp);
-  A.set_ips speak.arp [ first_ip; second_ip ] >>= fun () ->
+  A.set_ips speak.arp [ first_ip; second_ip ];
   Alcotest.(check (slist ip Ipaddr.V4.compare)) "list of bound IPs after setting two IPs"
-    [ first_ip; second_ip ] (A.get_ips speak.arp);
-  Lwt.return_unit
+    [ first_ip; second_ip ] (A.get_ips speak.arp)
 
-let add_get_remove_ips () =
-  get_arp () >>= fun stack ->
+let add_get_remove_ips ~sw ~clock () =
+  let stack = get_arp ~sw ~clock () in
   let check str expected =
     Alcotest.(check (list ip)) str expected (A.get_ips stack.arp)
   in
   check "bound ips is an empty list on startup" [];
-  A.set_ips stack.arp [ first_ip; first_ip ] >>= fun () ->
+  A.set_ips stack.arp [ first_ip; first_ip ];
   check "set ips with duplicate elements result in deduplication" [first_ip];
-  A.remove_ip stack.arp first_ip >>= fun () ->
+  A.remove_ip stack.arp first_ip;
   check "ip list is empty after removing only ip" [];
-  A.remove_ip stack.arp first_ip >>= fun () ->
+  A.remove_ip stack.arp first_ip;
   check "ip list is empty after removing from empty list" [];
-  A.add_ip stack.arp first_ip >>= fun () ->
+  A.add_ip stack.arp first_ip;
   check "first ip is the only member of the set of bound ips" [first_ip];
-  A.add_ip stack.arp first_ip >>= fun () ->
-  check "adding ips is idempotent" [first_ip];
-  Lwt.return_unit
+  A.add_ip stack.arp first_ip;
+  check "adding ips is idempotent" [first_ip]
 
-let input_single_garp () =
-  two_arp () >>= fun (listen, speak) ->
+let input_single_garp ~sw ~clock () =
+  let (listen, speak) = two_arp ~sw ~clock () in
   (* set the IP on speak_arp, which should cause a GARP to be emitted which
      listen_arp will hear and cache. *)
   let one_and_done buf =
     let arpbuf = Cstruct.shift buf 14 in
-    A.input listen.arp arpbuf >>= fun () ->
+    A.input listen.arp arpbuf;
     V.disconnect listen.netif
   in
-  timeout ~time:500 (
-    Lwt.join [
-      (V.listen listen.netif ~header_size one_and_done >|= fun _ -> ());
-      Time.sleep_ns (Duration.of_ms 100) >>= fun () ->
-      Lwt.async (fun () -> A.query listen.arp first_ip >|= ignore) ;
-      A.set_ips speak.arp [ first_ip ];
-    ])
-    >>= fun () ->
+  timeout ~clock ~time:500 (fun () ->
+    Eio.Fiber.all [
+      (fun () -> V.listen listen.netif ~header_size one_and_done |> ignore);
+      (fun () -> 
+        Eio.Time.sleep clock 0.1;
+        Eio.Fiber.fork ~sw (fun () -> A.query listen.arp first_ip |> ignore);
+        A.set_ips speak.arp [ first_ip ])
+    ]);
   (* try a lookup of the IP set by speak.arp, and fail if this causes listen_arp
      to block or send an ARP query -- listen_arp should answer immediately from
      the cache.  An attempt to resolve via query will result in a timeout, since
      speak.arp has no listener running and therefore won't answer any arp
      who-has requests. *)
-    timeout ~time:500 (query_or_die listen.arp first_ip (V.mac speak.netif)) (* >>= fun () ->
-                                                                                Time.sleep_ns (Duration.of_sec 5) *)
+    timeout ~clock ~time:500 (fun () -> 
+      query_or_die listen.arp first_ip (V.mac speak.netif))
 
-let input_single_unicast () =
-  two_arp () >>= fun (listen, speak) ->
+let input_single_unicast ~sw ~clock () =
+  let (listen, speak) = two_arp ~sw ~clock() in
   (* contrive to make a reply packet for the listener to hear *)
-  let for_listener =
-    arp_reply
+  let for_listener = arp_reply
       ~from_netif:speak.netif ~to_netif:listen.netif
       ~from_ip:first_ip ~to_ip:second_ip
   in
   let listener = start_arp_listener listen () in
-  timeout ~time:500 (
-  Lwt.choose [
-    (V.listen listen.netif ~header_size listener >|= fun _ -> ());
-    Time.sleep_ns (Duration.of_ms 2) >>= fun () ->
-    E.write speak.ethif (V.mac listen.netif) `ARP ~size for_listener >>= fun _ ->
-    query_and_no_response listen.arp first_ip
+  timeout ~clock ~time:500 (fun () ->
+  Eio.Fiber.any [
+    (fun () -> V.listen listen.netif ~header_size listener |> ignore);
+    fun () ->
+      Eio.Time.sleep clock 0.002;
+      E.writev speak.ethif (V.mac listen.netif) `ARP [for_listener] |> ignore;
+      query_and_no_response listen.arp first_ip
   ])
 
-let input_resolves_wait () =
-  two_arp () >>= fun (listen, speak) ->
+let input_resolves_wait ~sw ~clock () =
+  let (listen, speak) = two_arp ~sw ~clock() in
   (* contrive to make a reply packet for the listener to hear *)
   let for_listener = arp_reply ~from_netif:speak.netif ~to_netif:listen.netif
-                         ~from_ip:first_ip ~to_ip:second_ip in
+                         ~from_ip:first_ip ~to_ip:second_ip
+  in
   (* initiate query when the cache is empty.  On resolution, fail for a timeout
      and test the MAC if resolution was successful, then disconnect the
      listening interface to ensure the test terminates.
      Fail with a timeout message if the whole thing takes more than 5s. *)
   let listener = start_arp_listener listen () in
-  let query_then_disconnect =
-    query_or_die listen.arp first_ip (V.mac speak.netif) >>= fun () ->
+  let query_then_disconnect () =
+    query_or_die listen.arp first_ip (V.mac speak.netif);
     V.disconnect listen.netif
   in
-  timeout ~time:5000 (
-    Lwt.join [
-      (V.listen listen.netif ~header_size listener >|= fun _ -> ());
+  timeout ~clock ~time:5000 (fun () ->
+    Eio.Fiber.all [
+      (fun () -> V.listen listen.netif ~header_size listener |> ignore);
       query_then_disconnect;
-      Time.sleep_ns (Duration.of_ms 1) >>= fun () ->
-      E.write speak.ethif (V.mac listen.netif) `ARP ~size for_listener >|= function
-      | Ok x -> x
-      | Error _ -> failf "ethernet write failed"
+      (fun () ->
+        Eio.Time.sleep clock 0.001;
+        E.writev speak.ethif (V.mac listen.netif) `ARP [for_listener])
     ]
   )
 
-let unreachable_times_out () =
-  get_arp () >>= fun speak ->
-  A.query speak.arp first_ip >>= function
-  | Ok _ -> failf "query claimed success when impossible for %a" Ipaddr.V4.pp first_ip
-  | Error `Timeout -> Lwt.return_unit
-  | Error e -> failf "error waiting for a timeout: %a" A.pp_error e
+let unreachable_times_out ~sw ~clock () =
+  let speak = get_arp ~sw ~clock () in
+  match A.query speak.arp first_ip with
+  | _ -> failf "query claimed success when impossible for %a" Ipaddr.V4.pp first_ip
+  | exception Arp.Timeout -> ()
 
-let input_replaces_old () =
-  three_arp () >>= fun (listen, claimant_1, claimant_2) ->
+let input_replaces_old ~sw ~clock () =
+  let (listen, claimant_1, claimant_2) = three_arp ~sw ~clock () in
   (* query for IP to accept responses *)
-  Lwt.async (fun () -> A.query listen.arp first_ip >|= ignore) ;
-  Lwt.async (fun () ->
+  Eio.Fiber.fork ~sw (fun () -> A.query listen.arp first_ip |> ignore) ;
+  Eio.Fiber.fork ~sw (fun () ->
       Log.debug (fun f -> f "arp listener started");
-      V.listen listen.netif ~header_size (start_arp_listener listen ()) >|= fun _ -> ());
-  timeout ~time:2000 (
-    set_and_check ~listener:listen.arp ~claimant:claimant_1 first_ip >>= fun () ->
-    set_and_check ~listener:listen.arp ~claimant:claimant_2 first_ip >>= fun () ->
+      V.listen listen.netif ~header_size (start_arp_listener listen ()) |> ignore);
+  timeout ~clock ~time:2000 (fun () ->
+    set_and_check ~listener:listen.arp ~claimant:claimant_1 first_ip;
+    set_and_check ~listener:listen.arp ~claimant:claimant_2 first_ip;
     V.disconnect listen.netif
     )
 
-let entries_expire () =
-  two_arp () >>= fun (listen, speak) ->
-  A.set_ips listen.arp [ second_ip ] >>= fun () ->
+let entries_expire ~sw ~clock () =
+  let (listen, speak) = two_arp ~sw ~clock () in
+  A.set_ips listen.arp [ second_ip ];
   (* here's what we expect listener to emit once its cache entry has expired *)
   let expected_arp_query =
     Arp_packet.({operation = Request;
@@ -334,22 +326,24 @@ let entries_expire () =
                  source_ip = second_ip; target_ip = first_ip})
   in
   (* query for IP to accept responses *)
-  Lwt.async (fun () -> A.query listen.arp first_ip >|= ignore) ;
-  Lwt.async (fun () -> V.listen listen.netif ~header_size (start_arp_listener listen ()) >|= fun _ -> ());
-  let test =
-    Time.sleep_ns (Duration.of_ms 10) >>= fun () ->
-    set_and_check ~listener:listen.arp ~claimant:speak first_ip >>= fun () ->
+  Eio.Fiber.fork ~sw (fun () -> A.query listen.arp first_ip |> ignore) ;
+  Eio.Fiber.fork ~sw (fun () -> V.listen listen.netif ~header_size (start_arp_listener listen ()) |> ignore);
+  let test () =
+    Eio.Time.sleep clock 0.010;
+    set_and_check ~listener:listen.arp ~claimant:speak first_ip;
     (* sleep for 5s to make sure we hit `tick` often enough *)
-    Time.sleep_ns (Duration.of_sec 5) >>= fun () ->
+    Eio.Time.sleep clock 5.;
+    Eio.traceln "%a" A.pp listen.arp;
+    
     (* asking now should generate a query *)
-    not_in_cache ~listen:speak.netif expected_arp_query listen.arp first_ip
+    not_in_cache ~clock ~listen:speak.netif expected_arp_query listen.arp first_ip
   in
-  timeout ~time:7000 test
+  timeout ~clock ~time:7000 test
 
 (* RFC isn't strict on how many times to try, so we'll just say any number
    greater than 1 is fine *)
-let query_retries () =
-  two_arp () >>= fun (listen, speak) ->
+let query_retries ~sw ~clock () =
+  let (listen, speak) = two_arp ~sw ~clock() in
   let expected_query = Arp_packet.({source_mac = V.mac speak.netif;
                                     target_mac = Macaddr.broadcast;
                                     source_ip = Ipaddr.V4.any;
@@ -359,30 +353,30 @@ let query_retries () =
   let how_many = ref 0 in
   let listener buf =
     check_ethif_response expected_query buf;
-    if !how_many = 0 then begin
-      how_many := !how_many + 1;
-      Lwt.return_unit
-    end else V.disconnect listen.netif
+    if !how_many = 0 then
+      how_many := !how_many + 1
+    else 
+      V.disconnect listen.netif
   in
   let ask () =
-    A.query speak.arp first_ip >>= function
-    | Error e -> failf "Received error before >1 query: %a" A.pp_error e
-    | Ok _ -> failf "got result from query for %a, erroneously" Ipaddr.V4.pp first_ip
+    match A.query speak.arp first_ip with
+    | exception Arp.Timeout -> failf "Received error before >1 query: %s" (Printexc.to_string Arp.Timeout)
+    | _ -> failf "got result from query for %a, erroneously" Ipaddr.V4.pp first_ip
   in
-  Lwt.pick [
-    (V.listen listen.netif ~header_size listener >|= fun _ -> ());
-    Time.sleep_ns (Duration.of_ms 2) >>= ask;
-    Time.sleep_ns (Duration.of_sec 6) >>= fun () ->
-    fail "query didn't succeed or fail within 6s"
+  Eio.Fiber.any [
+    (fun () -> V.listen listen.netif ~header_size listener |> ignore);
+    (fun () -> Eio.Time.sleep clock 0.002; ask ());
+    (fun () -> Eio.Time.sleep clock 6.;
+      fail "query didn't succeed or fail within 6s")
   ]
 
 (* requests for us elicit a reply *)
-let requests_are_responded_to () =
+let requests_are_responded_to ~sw ~clock () =
   let (answerer_ip, inquirer_ip) = (first_ip, second_ip) in
-  two_arp () >>= fun (inquirer, answerer) ->
+  let (inquirer, answerer) = two_arp ~sw ~clock  () in
   (* neither has a listener set up when we set IPs, so no GARPs in the cache *)
-  A.add_ip answerer.arp answerer_ip >>= fun () ->
-  A.add_ip inquirer.arp inquirer_ip >>= fun () ->
+  A.add_ip answerer.arp answerer_ip;
+  A.add_ip inquirer.arp inquirer_ip;
   let request = arp_request ~from_netif:inquirer.netif ~to_mac:Macaddr.broadcast
       ~from_ip:inquirer_ip ~to_ip:answerer_ip
   in
@@ -396,60 +390,64 @@ let requests_are_responded_to () =
     check_ethif_response expected_reply buf;
     V.disconnect close_netif
   in
-  let arp_listener =
-    V.listen answerer.netif ~header_size (start_arp_listener answerer ()) >|= fun _ -> ()
+  let arp_listener () =
+    V.listen answerer.netif ~header_size (start_arp_listener answerer ()) |> ignore
   in
-  timeout ~time:1000 (
-    Lwt.join [
+  timeout ~clock ~time:1000 (fun () ->
+    Eio.Fiber.any [
       (* listen for responses and check them against an expected result *)
-      (V.listen inquirer.netif ~header_size (listener inquirer.netif) >|= fun _ -> ());
+      (fun () -> V.listen inquirer.netif ~header_size (listener inquirer.netif) |> ignore);
       (* start the usual ARP listener, which should respond to requests *)
       arp_listener;
       (* send a request for the ARP listener to respond to *)
-      Time.sleep_ns (Duration.of_ms 100) >>= fun () ->
-      E.write inquirer.ethif Macaddr.broadcast `ARP ~size request >>= fun _ ->
-      Time.sleep_ns (Duration.of_ms 100) >>= fun () ->
-      V.disconnect answerer.netif
+      (fun () -> 
+        Eio.Time.sleep clock 0.100;
+        E.writev inquirer.ethif Macaddr.broadcast `ARP [request] |> ignore;
+        Eio.Time.sleep clock 0.100;
+        V.disconnect answerer.netif)
     ];
   )
 
-let requests_not_us () =
+let requests_not_us ~sw ~clock () =
   let (answerer_ip, inquirer_ip) = (first_ip, second_ip) in
-  two_arp () >>= fun (answerer, inquirer) ->
-  A.add_ip answerer.arp answerer_ip >>= fun () ->
-  A.add_ip inquirer.arp inquirer_ip >>= fun () ->
-  let ask ip buf =
+  let (inquirer, answerer) = two_arp ~sw ~clock () in
+  A.add_ip answerer.arp answerer_ip;
+  A.add_ip inquirer.arp inquirer_ip;
+  let ask ip =
     let open Arp_packet in
+    let buf = Cstruct.create size in
     encode_into
       { operation = Request;
         source_mac = V.mac inquirer.netif; target_mac = Macaddr.broadcast;
         source_ip = inquirer_ip; target_ip = ip }
-      buf ;
-    size
+      buf;
+    buf
   in
   let requests = List.map ask [ inquirer_ip; Ipaddr.V4.any;
                                 Ipaddr.V4.of_string_exn "255.255.255.255" ] in
-  let make_requests =
-    Lwt_list.iter_s (fun b -> E.write inquirer.ethif Macaddr.broadcast `ARP ~size b >|= fun _ -> ())
+  let make_requests () =
+    List.iter (fun b -> E.writev inquirer.ethif Macaddr.broadcast `ARP [b] |> ignore)
       requests
   in
   let disconnect_listeners () =
-    Lwt_list.iter_s (V.disconnect) [answerer.netif; inquirer.netif]
+    List.iter (V.disconnect) [answerer.netif; inquirer.netif]
   in
-  Lwt.join [
-    (V.listen answerer.netif ~header_size (start_arp_listener answerer ()) >|= fun _ -> ());
-    (V.listen inquirer.netif ~header_size (fail_on_receipt inquirer.netif) >|= fun _ -> ());
-    make_requests >>= fun _ ->
-    Time.sleep_ns (Duration.of_ms 100) >>=
-    disconnect_listeners
+  Eio.Fiber.all [ 
+    (fun () -> V.listen answerer.netif ~header_size (start_arp_listener answerer ()) |> ignore);
+    (fun () -> V.listen inquirer.netif ~header_size (fail_on_receipt inquirer.netif) |> ignore);
+    (fun () -> 
+      make_requests ();
+      Eio.Time.sleep clock 0.100;
+      disconnect_listeners ())
   ]
 
-let nonsense_requests () =
+let nonsense_requests ~sw ~clock () =
   let (answerer_ip, inquirer_ip) = (first_ip, second_ip) in
-  three_arp () >>= fun (answerer, inquirer, checker) ->
-  A.set_ips answerer.arp [ answerer_ip ] >>= fun () ->
-  let request number arp =
+  let (answerer, inquirer, checker) = three_arp ~sw ~clock () in
+  A.set_ips answerer.arp [ answerer_ip ];
+  let request number =
     let open Arp_packet in
+    let arp = Cstruct.create Arp_packet.size in
     encode_into
       { operation = Request;
 	source_mac = V.mac inquirer.netif;
@@ -457,30 +455,31 @@ let nonsense_requests () =
 	source_ip = inquirer_ip;
 	target_ip = answerer_ip } arp ;
     Cstruct.BE.set_uint16 arp 6 number;
-    Arp_packet.size
+    arp
   in
   let requests = List.map request [0; 3; -1; 255; 256; 257; 65536] in
-  let make_requests =
-    Lwt_list.iter_s (fun l -> E.write inquirer.ethif Macaddr.broadcast `ARP ~size l >|= fun _ -> ()) requests in
+  let make_requests () =
+    List.iter (fun l -> E.writev inquirer.ethif Macaddr.broadcast `ARP [l] |> ignore) requests in
   let expected_probe = Arp_packet.{ operation = Request;
                                     source_mac = V.mac answerer.netif;
                                     source_ip = answerer_ip;
                                     target_mac = Macaddr.broadcast;
                                     target_ip = inquirer_ip; }
   in
-  Lwt.async (fun () -> V.listen answerer.netif ~header_size (start_arp_listener answerer ()) >|= fun _ -> ());
-  timeout ~time:1000 (
-    Lwt.join [
-      (V.listen inquirer.netif ~header_size (fail_on_receipt inquirer.netif) >|= fun _ -> ());
-      make_requests >>= fun () ->
-      V.disconnect inquirer.netif >>= fun () ->
-      (* not sufficient to just check to see whether we've replied; it's equally
-         possible that we erroneously make a cache entry.  Make sure querying
-         inquirer_ip results in an outgoing request. *)
-      not_in_cache ~listen:checker.netif expected_probe answerer.arp inquirer_ip
+  Eio.Fiber.fork ~sw (fun () -> V.listen answerer.netif ~header_size (start_arp_listener answerer ()) |> ignore);
+  timeout ~clock ~time:1000 (fun () ->
+    Eio.Fiber.all [
+      (fun () -> V.listen inquirer.netif ~header_size (fail_on_receipt inquirer.netif) |> ignore);
+      (fun () -> 
+        make_requests ();
+        V.disconnect inquirer.netif;
+        (* not sufficient to just check to see whether we've replied; it's equally
+          possible that we erroneously make a cache entry.  Make sure querying
+          inquirer_ip results in an outgoing request. *)
+        not_in_cache ~clock ~listen:checker.netif expected_probe answerer.arp inquirer_ip)
     ] )
 
-let packet () =
+let packet ~sw:_ ~clock:_ () =
   let first_mac  = Macaddr.of_string_exn "10:9a:dd:01:23:45" in
   let second_mac = Macaddr.of_string_exn "00:16:3e:ab:cd:ef" in
   let example_request =
@@ -495,8 +494,9 @@ let packet () =
   match Arp_packet.decode marshalled with
   | Error _ -> Alcotest.fail "couldn't unmarshal something we made ourselves"
   | Ok unmarshalled ->
-    Alcotest.(check packet) "serialize/deserialize" example_request unmarshalled;
-    Lwt.return_unit
+    Alcotest.(check packet) "serialize/deserialize" example_request unmarshalled
+
+
 
 let suite =
   [
@@ -515,8 +515,18 @@ let suite =
     "queries are tried repeatedly before timing out", `Quick, query_retries;
   ]
 
-let run test () =
-  Lwt_main.run (test ())
+let run_dir program () =
+  Eio_linux.run @@ fun env ->
+  let clock = Eio.Stdenv.clock env in
+  let dir = Eio.Stdenv.fs env in
+  try
+    Eio.Switch.run @@ fun sw ->
+    program ~sw ~clock ~dir ();
+    Eio.Switch.fail sw Not_found
+  with Not_found -> ()
+
+let run program =
+  run_dir (fun ~sw ~clock ~dir:_ () -> program ~sw ~clock ())
 
 let () =
   (* enable logging to stdout for all modules *)

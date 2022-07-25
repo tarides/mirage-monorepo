@@ -1,3 +1,5 @@
+(*
+
 open Lwt.Infix
 
 module Stack = Tcpip_stack_socket.V4
@@ -229,3 +231,4 @@ let suite = [
   "file descriptors are not leaked in tcpv4v6 (v6 only)", `Quick, no_leak_fds_in_tcpv4v6_5;
   "file descriptors are not leaked in udpv4v6 (v6 only)", `Quick, no_leak_fds_in_udpv4v6_5;
 ]
+*)

@@ -1,24 +1,3 @@
-### v7.1.1 (2022-05-24)
-
-* Ndpv6: demote more logs to debug level (#480 @reynir)
-* Ndpv6: set RS opt header (#482 @reynir)
-* Icmpv6: add redirect parsing (#481 @reynir)
-* Improve log messages of connect and disconnect of various layers and stacks:
-  separate IP addresses with ", " (#485 @hannesm)
-* TCP log sources: prefix "tcp" to distinguish them (#484 @reynir)
-
-### v7.1.0 (2022-03-23)
-
-* Work with MSVC compiler (@jonahbeckford, #476)
-* Skip `Lwt_bytes` UDP tests on Windows (@MisterDA, #469)
-* Run `PKG_CONFIG_PATH` through cypath (@MisterDA, #469)
-* Add Windows CI via GitHub Action (@MisterDA, #469)
-* Remove `which` command and replace it by `command -v` (@hannesm, #472)
-* Fix some typos (@MisterDA, #471)
-* Update binaries to `cmdliner.1.1.0` (@dinosaure, #475)
-* Be able to extract via _functor_/`functoria` the TCP/IP stack (@dinosaure, #474)
-* Remove missing deprecated usage of `Cstruct.len` (@dinosaure, #477)
-
 ### v7.0.1 (2021-12-17)
 
 * Fix cancellation of Unix socket when we don't use `Stack.connect` (@dinosaure, @hannesm, #466)
@@ -29,10 +8,10 @@
   #456 by @dinosaure)
 * Move module types (IP, UDP, TCP, STACK, ICMP) into tcpip core library
   (#463 @hannesm)
-* API breakage: `Tcpip_checksum` is now part of tcpip.checksum (used to be
+* API breakage: Tcpip_checksum is now part of tcpip.checksum (used to be
   part of tcpip #463 @hannesm)
 * API breakage: tcpip.unix has been removed (#463 @hannesm)
-* Use Lwt.pause instead of deprecated `Lwt_{unix,main}.yield` (#461 @dinosaure)
+* Use Lwt.pause instead of deprecated Lwt_{unix,main}.yield (#461 @dinosaure)
 
 ### v6.4.0 (2021-11-11)
 

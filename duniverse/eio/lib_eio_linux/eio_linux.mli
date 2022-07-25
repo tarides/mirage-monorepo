@@ -186,10 +186,6 @@ module Low_level : sig
       If multiple buffers are given, they are sent in order.
       It will make multiple OS calls if the OS doesn't write all of it at once. *)
 
-  val writev_single : ?file_offset:Optint.Int63.t -> FD.t -> Cstruct.t list -> int
-  (** [writev_single] is like [writev] but only performs a single write operation.
-      It returns the number of bytes written, which may be smaller than the requested amount. *)
-
   val splice : FD.t -> dst:FD.t -> len:int -> int
   (** [splice src ~dst ~len] attempts to copy up to [len] bytes of data from [src] to [dst].
 
@@ -208,11 +204,6 @@ module Low_level : sig
 
   val fstat : FD.t -> Unix.stats
   (** Like {!Unix.fstat}. *)
-
-  val read_dir : FD.t -> string list
-  (** [read_dir dir] reads all directory entries from [dir].
-      The entries are not returned in any particular order
-      (not even necessarily the order in which Linux returns them). *)
 
   (** {1 Sockets} *)
 

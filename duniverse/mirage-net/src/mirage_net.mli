@@ -21,21 +21,17 @@
 
     [Mirage_net] defines the signature for MirageOS network devices.
 
-    {e Release v4.0.0 } *)
+    {e Release %%VERSION%% } *)
 
 module Net : sig
-  type error = [ `Invalid_length | `Disconnected ]
-  (** The type for IO operation errors *)
-
-  val pp_error: error Fmt.t
-  (** [pp_error] pretty-print network errors. *)
+  exception Invalid_length of int
 end
 
 type stats = {
-  mutable rx_bytes: int64;
-  mutable rx_pkts: int32;
-  mutable tx_bytes: int64;
-  mutable tx_pkts: int32;
+  mutable rx_bytes : int64;
+  mutable rx_pkts : int32;
+  mutable tx_bytes : int64;
+  mutable tx_pkts : int32;
 }
 (** The type for frame statistics to track the usage of the device. *)
 
@@ -43,61 +39,55 @@ type stats = {
 
 (** A network interface that serves Ethernet frames. *)
 module type S = sig
-
-  type error = private [> Net.error]
-  (** The type for network interface errors. *)
-
-  val pp_error: error Fmt.t
-  (** [pp_error] is the pretty-printer for errors. *)
-
   type t
   (** The type representing the internal state of the network device. *)
 
-  val disconnect: t -> unit Lwt.t
+  val disconnect : t -> unit
   (** Disconnect from the network device. While this might take some time to
       complete, it can never result in an error. *)
 
-  val write: t -> size:int -> (Cstruct.t -> int) -> (unit, error) result Lwt.t
+  val writev : t -> Cstruct.t list -> unit
   (** [write net ~size fill] allocates a buffer of length [size], where [size]
      must not exceed the interface maximum packet size ({!mtu} plus Ethernet
      header). The allocated buffer is zeroed and passed to the [fill] function
      which returns the payload length, which may not exceed the length of the
      buffer. When [fill] returns, a sub buffer is put on the wire: the allocated
-     buffer from index 0 to the returned length. *)
+     buffer from index 0 to the returned length.
+     
+     Can raise Invalid_length *)
 
-  val listen: t -> header_size:int -> (Cstruct.t -> unit Lwt.t) -> (unit, error) result Lwt.t
+  val listen : t -> header_size:int -> (Cstruct.t -> unit) -> unit
   (** [listen ~header_size net fn] waits for a [packet] with size at most
      [header_size + mtu] on the network device. When a [packet] is received, an
      asynchronous task is created in which [fn packet] is called. The ownership
      of [packet] is transferred to [fn].  The function can be stopped by calling
      {!disconnect}. *)
 
-  val mac: t -> Macaddr.t
+  val mac : t -> Macaddr.t
   (** [mac net] is the MAC address of [net]. *)
 
-  val mtu: t -> int
+  val mtu : t -> int
   (** [mtu net] is the Maximum Transmission Unit of [net]. This excludes the
      Ethernet header. *)
 
-  val get_stats_counters: t -> stats
+  val get_stats_counters : t -> stats
   (** Obtain the most recent snapshot of the interface statistics. *)
 
-  val reset_stats_counters: t -> unit
+  val reset_stats_counters : t -> unit
   (** Reset the statistics associated with this interface to their
       defaults. *)
-
 end
 
 module Stats : sig
-  val create: unit -> stats
+  val create : unit -> stats
   (** [create ()] returns a fresh set of zeroed counters *)
 
-  val rx: stats -> int64 -> unit
+  val rx : stats -> int64 -> unit
   (** [rx t size] records that we received a packet of length [size] *)
 
-  val tx: stats -> int64 -> unit
+  val tx : stats -> int64 -> unit
   (** [tx t size] records that we transmitted a packet of length [size] *)
 
-  val reset: stats -> unit
+  val reset : stats -> unit
   (** [reset t] resets all packet counters in [t] to 0 *)
 end

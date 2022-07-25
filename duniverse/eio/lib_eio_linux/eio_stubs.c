@@ -2,20 +2,12 @@
 #include <sys/types.h>
 #include <sys/eventfd.h>
 #include <sys/random.h>
-#include <sys/syscall.h>
-#include <limits.h>
-#include <errno.h>
-#include <dirent.h>
 
 #include <caml/mlvalues.h>
 #include <caml/memory.h>
-#include <caml/alloc.h>
 #include <caml/signals.h>
 #include <caml/unixsupport.h>
 #include <caml/bigarray.h>
-
-// Make sure we have enough space for at least one entry.
-#define DIRENT_BUF_SIZE (PATH_MAX + sizeof(struct dirent64))
 
 CAMLprim value caml_eio_eventfd(value v_initval) {
   int ret;
@@ -41,39 +33,10 @@ CAMLprim value caml_eio_mkdirat(value v_fd, value v_path, value v_perm) {
 CAMLprim value caml_eio_getrandom(value v_ba, value v_off, value v_len) {
   CAMLparam1(v_ba);
   ssize_t ret;
-  ssize_t off = (ssize_t)Long_val(v_off);
-  ssize_t len = (ssize_t)Long_val(v_len);
-  do {
-    void *buf = Caml_ba_data_val(v_ba) + off;
-    caml_enter_blocking_section();
-    ret = getrandom(buf, len, 0);
-    caml_leave_blocking_section();
-  } while (ret == -1 && errno == EINTR);
+  void *buf = Caml_ba_data_val(v_ba) + Long_val(v_off);
+  caml_enter_blocking_section();
+  ret = getrandom(buf, Long_val(v_len), 0);
+  caml_leave_blocking_section();
   if (ret == -1) uerror("getrandom", Nothing);
   CAMLreturn(Val_long(ret));
-}
-
-CAMLprim value caml_eio_getdents(value v_fd) {
-  CAMLparam1(v_fd);
-  CAMLlocal2(result, cons);
-  char buf[DIRENT_BUF_SIZE];
-  struct dirent64 *d;
-  int nread, pos;
-  caml_enter_blocking_section();
-  nread = syscall(SYS_getdents64, Int_val(v_fd), buf, DIRENT_BUF_SIZE);
-  caml_leave_blocking_section();
-  if (nread == -1) uerror("getdents", Nothing);
-
-  result = Val_int(0); /* The empty list */
-
-  for (pos = 0; pos < nread;) {
-    d = (struct dirent64 *) (buf + pos);
-    cons = caml_alloc(2, 0);
-    Store_field(cons, 0, caml_copy_string_of_os(d->d_name)); // Head
-    Store_field(cons, 1, result);                            // Tail
-    result = cons;
-    pos += d->d_reclen;
-  }
-
-  CAMLreturn(result);
 }

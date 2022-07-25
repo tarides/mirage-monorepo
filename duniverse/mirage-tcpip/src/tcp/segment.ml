@@ -14,11 +14,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
-[@@@ocaml.warning "-3"]
-
-open Lwt.Infix
-
-let src = Logs.Src.create "tcp.segment" ~doc:"Mirage TCP Segment module"
+let src = Logs.Src.create "segment" ~doc:"Mirage TCP Segment module"
 module Log = (val Logs.src_log src : Logs.LOG)
 
 let lwt_sequence_add_l s seq =
@@ -55,9 +51,9 @@ let rec reset_seq segs =
    It also looks for control messages and dispatches them to
    the Rtx queue to ack messages or close channels.
 *)
-module Rx(Time:Mirage_time.S) = struct
+module Rx = struct
   open Tcp_packet
-  module StateTick = State.Make(Time)
+  module StateTick = State
 
   (* Individual received TCP segment
      TODO: this will change when IP fragments work *)
@@ -83,8 +79,8 @@ module Rx(Time:Mirage_time.S) = struct
 
   type t = {
     mutable segs: S.t;
-    rx_data: (Cstruct.t list option * Sequence.t option) Lwt_mvar.t; (* User receive channel *)
-    tx_ack: (Sequence.t * int) Lwt_mvar.t; (* Acks of our transmitted segs *)
+    rx_data: (Cstruct.t list option * Sequence.t option) Eio.Stream.t; (* User receive channel *)
+    tx_ack: (Sequence.t * int) Eio.Stream.t; (* Acks of our transmitted segs *)
     wnd: Window.t;
     state: State.t;
   }
@@ -136,14 +132,14 @@ module Rx(Time:Mirage_time.S) = struct
   let send_challenge_ack q =
     (* TODO:  rfc5961 ACK Throttling *)
     (* Is this the correct way trigger an ack? *)
-    if Lwt_mvar.is_empty q.rx_data
-      then Lwt_mvar.put q.rx_data (Some [], Some Sequence.zero)
-      else Lwt.return_unit
+    if Eio.Stream.is_empty q.rx_data
+      then Eio.Stream.add q.rx_data (Some [], Some Sequence.zero)
+      else ()
 
   (* Given an input segment, the window information, and a receive
      queue, update the window, extract any ready segments into the
      user receive queue, and signal any acks to the Tx queue *)
-  let input (q:t) seg =
+  let input ~sw (q:t) seg =
     match check_valid_segment q seg with
     | `Ok ->
       let force_ack = ref false in
@@ -152,7 +148,7 @@ module Rx(Time:Mirage_time.S) = struct
       (* Walk through the set and get a list of contiguous segments *)
       let ready, waiting = S.fold (fun seg acc ->
           match Sequence.compare seg.header.sequence (Window.rx_nxt_inseq q.wnd) with
-          | (-1) ->
+          | c when c < 0 ->
             (* Sequence number is in the past, probably an overlapping
                segment. Drop it for now, but TODO segment
                coalescing *)
@@ -164,7 +160,7 @@ module Rx(Time:Mirage_time.S) = struct
             let (ready,waiting) = acc in
             Window.rx_advance_inseq q.wnd (len seg);
             (S.add seg ready), waiting
-          | 1 ->
+          | c when c > 0 ->
             (* Sequence is in the future, so can't use it yet *)
             force_ack := true;
             let (ready,waiting) = acc in
@@ -174,8 +170,9 @@ module Rx(Time:Mirage_time.S) = struct
       q.segs <- waiting;
       (* If the segment has an ACK, tell the transmit side *)
       let tx_ack =
+        fun () ->
         if seg.header.ack && (Sequence.geq seg.header.ack_number (Window.ack_seq q.wnd)) then begin
-          StateTick.tick q.state (State.Recv_ack seg.header.ack_number);
+          StateTick.tick ~sw q.state (State.Recv_ack seg.header.ack_number);
           let data_in_flight = Window.tx_inflight q.wnd in
           let ack_has_advanced = (Window.ack_seq q.wnd) <> seg.header.ack_number in
           let win_has_changed = (Window.ack_win q.wnd) <> seg.header.window in
@@ -183,15 +180,16 @@ module Rx(Time:Mirage_time.S) = struct
               (not data_in_flight && win_has_changed)) then begin
             Window.set_ack_serviced q.wnd false;
             Window.set_ack_seq_win q.wnd seg.header.ack_number seg.header.window;
-            Lwt_mvar.put q.tx_ack ((Window.ack_seq q.wnd), (Window.ack_win q.wnd))
+            Eio.Stream.add q.tx_ack ((Window.ack_seq q.wnd), (Window.ack_win q.wnd))
           end else begin
             Window.set_ack_seq_win q.wnd seg.header.ack_number seg.header.window;
-            Lwt.return_unit
+            ()
           end
-        end else Lwt.return_unit
+        end else ()
       in
       (* Inform the user application of new data *)
       let urx_inform =
+        fun () ->
         (* TODO: deal with overlapping fragments *)
         let elems_r, winadv = S.fold (fun seg (acc_l, acc_w) ->
             (if Cstruct.length seg.payload > 0 then seg.payload :: acc_l else acc_l),
@@ -200,32 +198,32 @@ module Rx(Time:Mirage_time.S) = struct
         let elems = List.rev elems_r in
         let w = if !force_ack || Sequence.(gt winadv zero)
           then Some winadv else None in
-        Lwt_mvar.put q.rx_data (Some elems, w) >>= fun () ->
+        Eio.Stream.add q.rx_data (Some elems, w);
         (* If the last ready segment has a FIN, then mark the receive
            window as closed and tell the application *)
         (if fin ready then begin
             if S.cardinal waiting != 0 then
               Log.info (fun f -> f "application receive queue closed, but there are waiting segments.");
-            Lwt_mvar.put q.rx_data (None, Some Sequence.zero)
-          end else Lwt.return_unit)
+            Eio.Stream.add q.rx_data (None, Some Sequence.zero)
+          end else ())
       in
-      tx_ack <&> urx_inform
+      Eio.Fiber.both tx_ack urx_inform
     | `ChallengeAck ->
       send_challenge_ack q
     | `Drop ->
-      Lwt.return_unit
+      ()
     | `Reset ->
-      StateTick.tick q.state State.Recv_rst;
+      StateTick.tick ~sw q.state State.Recv_rst;
       (* Abandon our current segments *)
       q.segs <- S.empty;
       (* Signal TX side *)
       let txalert ack_svcd =
-        if not ack_svcd then Lwt.return_unit
-        else Lwt_mvar.put q.tx_ack (Window.ack_seq q.wnd, Window.ack_win q.wnd)
+        if not ack_svcd then ()
+        else Eio.Stream.add q.tx_ack (Window.ack_seq q.wnd, Window.ack_win q.wnd)
       in
-      txalert (Window.ack_serviced q.wnd) >>= fun () ->
+      txalert (Window.ack_serviced q.wnd);
       (* Use the fin path to inform the application of end of stream *)
-      Lwt_mvar.put q.rx_data (None, Some Sequence.zero)
+      Eio.Stream.add q.rx_data (None, Some Sequence.zero)
 end
 
 (* Transmitted segments are sent in-order, and may also be marked
@@ -239,15 +237,15 @@ type tx_flags = (* At most one of Syn/Fin/Rst/Psh allowed *)
   | Rst
   | Psh
 
-module Tx (Time:Mirage_time.S) (Clock:Mirage_clock.MCLOCK) = struct
+module Tx (Clock:Mirage_clock.MCLOCK) = struct
 
-  module StateTick = State.Make(Time)
-  module TT = Tcptimer.Make(Time)
+  module StateTick = State
+  module TT = Tcptimer
   module TX = Window.Make(Clock)
 
-  type ('a, 'b) xmit =
+  type xmit =
     flags:tx_flags -> wnd:Window.t -> options:Options.t list ->
-    seq:Sequence.t -> Cstruct.t -> ('a, 'b) result Lwt.t
+    seq:Sequence.t -> Cstruct.t -> unit
 
   type seg = {
     data: Cstruct.t;
@@ -264,19 +262,19 @@ module Tx (Time:Mirage_time.S) (Clock:Mirage_clock.MCLOCK) = struct
     (Cstruct.length seg.data))
 
   (* Queue of pre-transmission segments *)
-  type ('a, 'b) q = {
+  type q = {
     segs: seg Lwt_dllist.t;      (* Retransmitted segment queue *)
-    xmit: ('a, 'b) xmit;           (* Transmit packet to the wire *)
-    rx_ack: Sequence.t Lwt_mvar.t; (* RX Ack thread that we've sent one *)
+    xmit: xmit;           (* Transmit packet to the wire *)
+    rx_ack: Sequence.t Eio.Stream.t; (* RX Ack thread that we've sent one *)
     wnd: Window.t;                 (* TCP Window information *)
     state: State.t;                (* state of the TCP connection associated
                                       with this queue *)
-    tx_wnd_update: int Lwt_mvar.t; (* Received updates to the transmit window *)
+    tx_wnd_update: int Eio.Stream.t; (* Received updates to the transmit window *)
     rexmit_timer: Tcptimer.t;      (* Retransmission timer for this connection *)
     mutable dup_acks: int;         (* dup ack count for re-xmits *)
   }
 
-  type t = T: ('a, 'b) q -> t
+  type t = T: q -> t
 
   let ack_segment _ _ = ()
   (* Take any action to the user transmit queue due to this being
@@ -284,12 +282,12 @@ module Tx (Time:Mirage_time.S) (Clock:Mirage_clock.MCLOCK) = struct
 
   (* URG_TODO: Add sequence number to the Syn_rcvd rexmit to only
      rexmit most recent *)
-  let ontimer xmit st segs wnd seq =
+  let ontimer ~sw xmit st segs wnd seq =
     match State.state st with
     | State.Syn_rcvd _ | State.Established | State.Fin_wait_1 _
     | State.Close_wait | State.Last_ack _ ->
       begin match peek_opt_l segs with
-        | None -> Lwt.return Tcptimer.Stoptimer
+        | None -> Tcptimer.Stoptimer
         | Some rexmit_seg ->
           match rexmit_seg.seq = seq with
           | false ->
@@ -299,25 +297,24 @@ module Tx (Time:Mirage_time.S) (Clock:Mirage_clock.MCLOCK) = struct
             let ret =
               Tcptimer.ContinueSetPeriod (Window.rto wnd, rexmit_seg.seq)
             in
-            Lwt.return ret
+            ret
           | true ->
             if (Window.max_rexmits_done wnd) then (
               (* TODO - include more in log msg like ipaddrs *)
               Log.debug (fun f -> f "Max retransmits reached: %a" Window.pp wnd);
-              Log.info (fun fmt -> fmt "Max retransmits reached for connection - terminating");
-              StateTick.tick st State.Timeout;
-              Lwt.return Tcptimer.Stoptimer
+              Log.debug (fun fmt -> fmt "Max retransmits reached for connection - terminating");
+              StateTick.tick ~sw st State.Timeout;
+              Tcptimer.Stoptimer
             ) else (
               let flags = rexmit_seg.flags in
               let options = [] in (* TODO: put the right options *)
               Log.debug (fun fmt ->
                   fmt "TCP retransmission triggered by timer! seq = %d"
                     (Sequence.to_int rexmit_seg.seq));
-              Lwt.async
+              Eio.Fiber.fork ~sw
                 (fun () ->
                    xmit ~flags ~wnd ~options ~seq rexmit_seg.data
-                   (* TODO should this return value really be ignored? *)
-                   >|= fun (_: ('a,'b) result) -> () );
+                   );
               Window.alert_fast_rexmit wnd rexmit_seg.seq;
               Window.backoff_rto wnd;
               Log.debug (fun fmt -> fmt "Backed off! %a" Window.pp wnd);
@@ -327,10 +324,10 @@ module Tx (Time:Mirage_time.S) (Clock:Mirage_clock.MCLOCK) = struct
               let ret =
                 Tcptimer.ContinueSetPeriod (Window.rto wnd, rexmit_seg.seq)
               in
-              Lwt.return ret
+              ret
             )
       end
-    | _ -> Lwt.return Tcptimer.Stoptimer
+    | _ -> Tcptimer.Stoptimer
 
   let rec clearsegs q ack_remaining segs =
     match Sequence.(gt ack_remaining zero) with
@@ -339,13 +336,13 @@ module Tx (Time:Mirage_time.S) (Clock:Mirage_clock.MCLOCK) = struct
     | true ->
       match Lwt_dllist.take_opt_l segs with
       | None ->
-        Log.debug (fun f -> f "Dubious ACK received");
+        Log.warn (fun f -> f "Dubious ACK received");
         ack_remaining
       | Some s ->
         let seg_len = (len s) in
         match Sequence.lt ack_remaining seg_len with
         | true ->
-          Log.debug (fun f -> f "Partial ACK received");
+          Log.warn (fun f -> f "Partial ACK received");
           (* return uncleared segment to the sequence *)
           lwt_sequence_add_l s segs;
           ack_remaining
@@ -353,7 +350,7 @@ module Tx (Time:Mirage_time.S) (Clock:Mirage_clock.MCLOCK) = struct
           ack_segment q s;
           clearsegs q (Sequence.sub ack_remaining seg_len) segs
 
-  let rto_t q tx_ack =
+  let rto_t ~sw q tx_ack =
     (* Listen for incoming TX acks from the receive queue and ACK
        segments in our retransmission queue *)
     let rec tx_ack_t () =
@@ -375,18 +372,17 @@ module Tx (Time:Mirage_time.S) (Clock:Mirage_clock.MCLOCK) = struct
             let { wnd; _ } = q in
             let flags=rexmit_seg.flags in
             let options=[] in (* TODO: put the right options *)
-            Lwt.async (fun () ->
+            Eio.Fiber.fork ~sw (fun () ->
                 q.xmit ~flags ~wnd ~options ~seq rexmit_seg.data
-                (* TODO should this return value really be ignored? *)
-                >|= fun (_: ('a,'b) result) -> () );
-            Lwt.return_unit
+               );
+            ()
           end else
-            Lwt.return_unit
+            ()
         | false ->
           q.dup_acks <- 0;
-          Lwt.return_unit
+          ()
       in
-      Lwt_mvar.take tx_ack >>= fun _ ->
+      let _ = Eio.Stream.take tx_ack in
       Window.set_ack_serviced q.wnd true;
       let seq = Window.ack_seq q.wnd in
       let win = Window.ack_win q.wnd in
@@ -396,7 +392,7 @@ module Tx (Time:Mirage_time.S) (Clock:Mirage_clock.MCLOCK) = struct
              GCed later on.  However, it helps removing pressure on
              the GC. *)
           reset_seq q.segs;
-          Lwt.return_unit
+          ()
         | _ ->
           let ack_len = Sequence.sub seq (Window.tx_una q.wnd) in
           let dupacktest () =
@@ -405,25 +401,25 @@ module Tx (Time:Mirage_time.S) (Clock:Mirage_clock.MCLOCK) = struct
             not (Lwt_dllist.is_empty q.segs)
           in
           serviceack (dupacktest ()) ack_len seq win
-      end >>= fun () ->
+      end;
       (* Inform the window thread of updates to the transmit window *)
-      Lwt_mvar.put q.tx_wnd_update win >>= fun () ->
+      Eio.Stream.add q.tx_wnd_update win;
       tx_ack_t ()
     in
     tx_ack_t ()
 
-  let create ~xmit ~wnd ~state ~rx_ack ~tx_ack ~tx_wnd_update =
+  let create ~sw ~clock ~xmit ~wnd ~state ~rx_ack ~tx_ack ~tx_wnd_update =
     let segs = Lwt_dllist.create () in
     let dup_acks = 0 in
-    let expire = ontimer xmit state segs wnd in
+    let expire = ontimer ~sw xmit state segs wnd in
     let period_ns = Window.rto wnd in
-    let rexmit_timer = TT.t ~period_ns ~expire in
+    let rexmit_timer = TT.t ~sw ~clock ~period_ns ~expire in
     let q =
       { xmit; wnd; state; rx_ack; segs; tx_wnd_update;
         rexmit_timer; dup_acks }
     in
-    let t = rto_t q tx_ack in
-    T q, t
+    Eio.Fiber.fork ~sw (fun () -> rto_t ~sw q tx_ack);
+    T q
 
   (* Queue a segment for transmission. May block if:
        - There is no transmit window available.
@@ -443,14 +439,14 @@ module Tx (Time:Mirage_time.S) (Clock:Mirage_clock.MCLOCK) = struct
     (* Queue up segment just sent for retransmission if needed *)
     let q_rexmit () =
       match Sequence.(gt seq_len zero) with
-      | false -> Lwt.return_unit
+      | false -> ()
       | true ->
         lwt_sequence_add_r seg q.segs;
         let p = Window.rto q.wnd in
-        TT.start q.rexmit_timer ~p seg.seq
+        TT.restart q.rexmit_timer ~p seg.seq
     in
-    q_rexmit () >>= fun () ->
-    q.xmit ~flags ~wnd ~options ~seq data >>= fun _ ->
+    q_rexmit ();
+    q.xmit ~flags ~wnd ~options ~seq data |> ignore;
     (* Inform the RX ack thread that we've just sent one *)
-    Lwt_mvar.put q.rx_ack ack
+    Eio.Stream.add q.rx_ack ack
 end

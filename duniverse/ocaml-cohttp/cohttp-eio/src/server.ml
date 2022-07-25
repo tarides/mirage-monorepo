@@ -110,8 +110,7 @@ let run_domain ssock handler =
   in
   Switch.run (fun sw ->
       while true do
-        Eio.Net.accept_fork ~sw ssock ~on_error (fun flow _addr ->
-            Eio.Switch.run @@ fun sw ->
+        Eio.Net.accept_sub ~sw ssock ~on_error (fun ~sw flow _addr ->
             let reader =
               Eio.Buf_read.of_flow ~initial_size:0x1000 ~max_size:max_int
                 (flow :> Eio.Flow.source)

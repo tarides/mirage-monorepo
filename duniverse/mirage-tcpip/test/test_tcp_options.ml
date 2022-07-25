@@ -279,6 +279,3 @@ let suite = [
   test_options_marshal_padding;
   "test marshalling the empty list", `Quick, test_marshal_empty;
 ]
-
-let suite =
-  List.map (fun (n, s, f) -> n, s, (fun () -> Lwt.return (f ()))) suite

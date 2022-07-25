@@ -24,7 +24,7 @@
     the Rtx queue to ack messages or close channels.
 *)
 
-module Rx (T:Mirage_time.S) : sig
+module Rx : sig
 
   type segment = { header: Tcp_packet.t; payload: Cstruct.t }
   (** Individual received TCP segment *)
@@ -37,15 +37,15 @@ module Rx (T:Mirage_time.S) : sig
   val pp: Format.formatter -> t -> unit
 
   val create:
-    rx_data:(Cstruct.t list option * Sequence.t option) Lwt_mvar.t ->
+    rx_data:(Cstruct.t list option * Sequence.t option) Eio.Stream.t ->
     wnd:Window.t ->
     state:State.t ->
-    tx_ack:(Sequence.t * int) Lwt_mvar.t ->
+    tx_ack:(Sequence.t * int) Eio.Stream.t ->
     t
 
   val is_empty : t -> bool
 
-  val input : t -> segment -> unit Lwt.t
+  val input : sw:Eio.Switch.t -> t -> segment -> unit
   (** Given the current receive queue and an incoming packet,
       update the window, extract any ready segments into the
       user receive queue, and signal any acks to the Tx queue *)
@@ -56,22 +56,24 @@ type tx_flags = No_flags | Syn | Fin | Rst | Psh
 (** Either Syn/Fin/Rst allowed, but not combinations *)
 
 (** Pre-transmission queue *)
-module Tx (Time:Mirage_time.S)(Clock:Mirage_clock.MCLOCK) : sig
+module Tx (Clock:Mirage_clock.MCLOCK) : sig
 
-  type ('a, 'b) xmit = flags:tx_flags -> wnd:Window.t -> options:Options.t list ->
-    seq:Sequence.t -> Cstruct.t -> ('a, 'b) result Lwt.t
+  type xmit = flags:tx_flags -> wnd:Window.t -> options:Options.t list ->
+    seq:Sequence.t -> Cstruct.t -> unit
 
   type t
   (** Queue of pre-transmission segments *)
 
   val create:
-    xmit:('a, 'b) xmit -> wnd:Window.t -> state:State.t ->
-    rx_ack:Sequence.t Lwt_mvar.t ->
-    tx_ack:(Sequence.t * int) Lwt_mvar.t ->
-    tx_wnd_update:int Lwt_mvar.t -> t * unit Lwt.t
+    sw:Eio.Switch.t -> 
+    clock:Eio.Time.clock -> 
+    xmit:xmit -> wnd:Window.t -> state:State.t ->
+    rx_ack:Sequence.t Eio.Stream.t ->
+    tx_ack:(Sequence.t * int) Eio.Stream.t ->
+    tx_wnd_update:int Eio.Stream.t -> t
 
   val output:
-    ?flags:tx_flags -> ?options:Options.t list -> t -> Cstruct.t -> unit Lwt.t
+    ?flags:tx_flags -> ?options:Options.t list -> t -> Cstruct.t -> unit
   (** Queue a segment for transmission. May block if:
 
       {ul

@@ -108,7 +108,6 @@ let activate t ~parent =
 
 (* Runs [fn] with a fresh cancellation context. *)
 let with_cc ~ctx:fiber ~parent ~protected fn =
-  if not protected then check parent;
   let t = create ~protected in
   let deactivate = activate t ~parent in
   move_fiber_to t fiber;
@@ -193,9 +192,8 @@ module Fiber_context = struct
   let clear_cancel_fn t =
     Atomic.exchange t.cancel_fn None <> None
 
-  let make ~cc =
+  let make ~cc () =
     let tid = Ctf.mint_id () in
-    Ctf.note_created tid Ctf.Task;
     let t = { tid; cancel_context = cc; cancel_node = None; cancel_fn = Atomic.make None } in
     t.cancel_node <- Some (Lwt_dllist.add_r t cc.fibers);
     t
@@ -203,7 +201,7 @@ module Fiber_context = struct
   let make_root () =
     let cc = create ~protected:false in
     cc.state <- On;
-    make ~cc
+    make ~cc ()
 
   let destroy t =
     Option.iter Lwt_dllist.remove t.cancel_node

@@ -1,0 +1,4 @@
+(library
+ (name tcpip_stack_eio)
+ (public_name tcpip.stack-eio)
+ (libraries tcpip))

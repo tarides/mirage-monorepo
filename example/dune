@@ -9,3 +9,18 @@
  (public_name httpaf-server)
  (modules httpaf_server)
  (libraries httpaf-eio eio_main))
+
+(executable
+ (name httpaf_tcpip_server)
+ (public_name httpaf-tcpip-server)
+ (modules httpaf_tcpip_server)
+ (libraries
+  httpaf-eio
+  tcpip.stack-eio
+  tcpip.ipv4
+  tcpip.ipv6
+  tcpip.stack-direct
+  mirage-net-unix
+  mirage-clock-unix
+  mirage-random-test
+  eio_main))

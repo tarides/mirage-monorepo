@@ -23,8 +23,7 @@ let fresh_window () =
   Alcotest.(check int) "no traffic received yet" 0 @@ Tcp.Window.rx_totalbytes window;
   Alcotest.(check int32) "should be able to send 65535 <<= 2 bytes" Int32.(mul 65535l 4l) @@ Tcp.Window.tx_wnd window;
   Alcotest.(check int32) "should be able to receive 65535 <<= 2 bytes" Int32.(mul 65535l 4l) @@ Tcp.Window.rx_wnd window;
-  Alcotest.(check int64) "initial rto is 2/3 second" (Duration.of_ms 667) @@ Tcp.Window.rto window;
-  Lwt.return_unit
+  Alcotest.(check int64) "initial rto is 2/3 second" (Duration.of_ms 667) @@ Tcp.Window.rto window
 
 let increase_congestion_window window goal =
   (* simulate a successful slow start, which primes the congestion window to be relatively large *)
@@ -85,9 +84,7 @@ let recover_fast () =
 
   Alcotest.(check bool) "fast retransmit when we wanted it" true @@ Tcp.Window.fast_rec window;
 
-  Alcotest.(check bool) "once entering fast recovery, we can send >0 packets" true ((Int32.compare (Tcp.Window.tx_available window) 0l) > 0);
-
-  Lwt.return_unit
+  Alcotest.(check bool) "once entering fast recovery, we can send >0 packets" true ((Int32.compare (Tcp.Window.tx_available window) 0l) > 0)
 
 let rto_calculation () =
   let window = default_window () in
@@ -109,9 +106,7 @@ let rto_calculation () =
   let max_size = Tcp.Window.tx_available window |> Tcp.Sequence.of_int32 in
   let sz = Tcp.Sequence.add max_size @@ (Tcp.Window.tx_nxt window) in
   Timed_window.tx_ack window sz receive_window;
-  Alcotest.(check int64) "After subsequent RTT measurement, the calculated rto is 1087.5ms" (Duration.of_us 1087500) @@ Tcp.Window.rto window;
-
-  Lwt.return_unit
+  Alcotest.(check int64) "After subsequent RTT measurement, the calculated rto is 1087.5ms" (Duration.of_us 1087500) @@ Tcp.Window.rto window
 
 
 let suite = [

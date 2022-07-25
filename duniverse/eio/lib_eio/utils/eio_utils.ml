@@ -4,4 +4,5 @@
 
 module Lf_queue = Lf_queue
 module Suspended = Suspended
+module Trace = Trace
 module Zzz = Zzz

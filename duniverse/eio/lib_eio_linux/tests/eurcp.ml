@@ -1,3 +1,5 @@
+[@@@alert "-deprecated"]
+
 let setup_log style_renderer level =
   Fmt_tty.setup_std_outputs ?style_renderer ();
   Logs.set_level level;
@@ -26,11 +28,11 @@ let cmd =
         `S "DESCRIPTION";
         `P "$(tname) copies a file using Linux io_uring.";
       ]
-  in
-  let info = Cmd.info "eurcp" ~version:"1.0.0" ~doc ~man in
-  Cmd.v info Term.(const Eurcp_lib.run_cp $ block_size $ queue_depth $ infile $ outfile $ setup_log)
+    in
+    ( Term.(pure Eurcp_lib.run_cp $ block_size $ queue_depth $ infile $ outfile $ setup_log),
+      Term.info "eurcp" ~version:"1.0.0" ~doc ~man )
   
 let () =
-  match Cmd.eval cmd with
-  | 0 -> exit (if Logs.err_count () > 0 then 1 else 0)
-  | _ -> exit 1
+  match Term.eval cmd with
+  | `Error _ -> exit 1
+  | _ -> exit (if Logs.err_count () > 0 then 1 else 0)

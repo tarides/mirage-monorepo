@@ -102,18 +102,3 @@ Check Unix debug clock:
 +Sleep done
 - : unit = ()
 ```
-
-Timer and busy loop:
-```ocaml
-let rec loop () =
-  Eio.Fiber.yield ();
-  loop ()
-```
-
-```ocaml
-# run @@ fun ~clock ->
-  Fiber.first
-    loop
-    (fun () -> Eio.Time.sleep clock 0.1);;
-- : unit = ()
-```

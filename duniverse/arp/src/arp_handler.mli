@@ -35,7 +35,7 @@
     While the {!Arp_packet} module is exposed, for normal operation it is not
     needed, but this module should be sufficient.
 
-    {e v3.0.0 - {{:https://github.com/mirage/arp }homepage}}
+    {e %%VERSION%% - {{:%%PKG_HOMEPAGE%% }homepage}}
 *)
 
 

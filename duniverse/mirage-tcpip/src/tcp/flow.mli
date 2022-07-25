@@ -14,10 +14,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
-module Make (IP:Tcpip.Ip.S)
-            (TM:Mirage_time.S)
-            (C:Mirage_clock.MCLOCK)
-            (R:Mirage_random.S) : sig
+module Make (IP : Tcpip.Ip.S) (C : Mirage_clock.MCLOCK) (R : Mirage_random.S) : sig
   include Tcpip.Tcp.S with type ipaddr = IP.ipaddr
-  val connect : IP.t -> t Lwt.t
+
+  val connect : sw:Eio.Switch.t -> clock:Eio.Time.clock -> IP.t -> t
 end

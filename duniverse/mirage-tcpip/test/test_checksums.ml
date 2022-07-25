@@ -19,24 +19,21 @@ let udp_ipv4_correct_positive () =
   let buf = Cstruct.of_string example_ipv4_udp in
   let (ipv4_header, transport_packet) = unwrap_ipv4 buf in
   Alcotest.(check bool) "for a correct UDP checksum, return true"
-    true @@ verify_ipv4_udp ~ipv4_header ~transport_packet;
-  Lwt.return_unit
+    true @@ verify_ipv4_udp ~ipv4_header ~transport_packet
 
 let udp_ipv4_correct_negative () =
   let buf = Cstruct.of_string example_ipv4_udp in
   Cstruct.BE.set_uint32 buf ((Cstruct.length buf) - 4) 0x1234l;
   let (ipv4_header, transport_packet) = unwrap_ipv4 buf in
   Alcotest.(check bool) "mutating the packet w/o fixing checksum causes verification to fail"
-    false @@ verify_ipv4_udp ~ipv4_header ~transport_packet;
-  Lwt.return_unit
+    false @@ verify_ipv4_udp ~ipv4_header ~transport_packet
 
 let udp_ipv4_allows_zero () =
   let buf = Cstruct.of_string example_ipv4_udp in
   let (ipv4_header, transport_packet) = unwrap_ipv4 buf in
   Udp_wire.set_udp_checksum transport_packet 0x0000;
   Alcotest.(check bool) "0x0000 checksum is OK for UDP"
-    true @@ verify_ipv4_udp ~ipv4_header ~transport_packet;
-  Lwt.return_unit
+    true @@ verify_ipv4_udp ~ipv4_header ~transport_packet
 
 let udp_ipv4_zero_checksum () =
   let src = Ipaddr.V4.make 127 0 0 1 in
@@ -67,25 +64,21 @@ let udp_ipv4_zero_checksum () =
 
   Cstruct.set_char transport_packet (Cstruct.length transport_packet - 1) '\000';
   Alcotest.(check bool) "Corrupted UDP packets with zero checksum fail verification"
-    false @@ verify_ipv4_udp ~ipv4_header ~transport_packet;
-
-  Lwt.return_unit
+    false @@ verify_ipv4_udp ~ipv4_header ~transport_packet
 
 
 let tcp_ipv4_correct_positive () =
   let buf = Cstruct.of_string example_ipv4_tcp in
   let (ipv4_header, transport_packet) = unwrap_ipv4 buf in
   Alcotest.(check bool) "for a correct TCP checksum, return true"
-    true @@ verify_ipv4_tcp ~ipv4_header ~transport_packet;
-  Lwt.return_unit
+    true @@ verify_ipv4_tcp ~ipv4_header ~transport_packet
 
 let tcp_ipv4_correct_negative () =
   let buf = Cstruct.of_string example_ipv4_tcp in
   Cstruct.BE.set_uint32 buf ((Cstruct.length buf) - 4) 0x1234l;
   let (ipv4_header, transport_packet) = unwrap_ipv4 buf in
   Alcotest.(check bool) "mutating a TCP packet w/o fixing checksum causes verification to fail"
-    false @@ verify_ipv4_tcp ~ipv4_header ~transport_packet;
-  Lwt.return_unit
+    false @@ verify_ipv4_tcp ~ipv4_header ~transport_packet
 
 let suite =
 [

@@ -13,18 +13,11 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
-open Lwt.Infix
 
-let src = Logs.Src.create "tcp.wire" ~doc:"Mirage TCP Wire module"
+let src = Logs.Src.create "Wire" ~doc:"Mirage TCP Wire module"
 module Log = (val Logs.src_log src : Logs.LOG)
 
-let count_tcp_to_ip = MProf.Counter.make ~name:"tcp-to-ip"
-
 module Make (Ip : Tcpip.Ip.S) = struct
-
-  type error = Tcpip.Ip.error
-
-  let pp_error = Tcpip.Ip.pp_error
 
   type t = {
     dst_port: int;             (* Remote TCP port *)
@@ -60,28 +53,26 @@ module Make (Ip : Tcpip.Ip.S) = struct
       }
     in
     (* Make a TCP/IP header frame *)
-    let tcp_size = Tcp_wire.sizeof_tcp + Options.lenv options + Cstruct.length payload in
+    let tcp_size = Tcp_wire.sizeof_tcp + Options.lenv options in
     let fill_buffer buf =
-      let pseudoheader = Ip.pseudoheader ip ~src dst `TCP tcp_size in
+      let pseudoheader = Ip.pseudoheader ip ~src dst `TCP (tcp_size + Cstruct.length payload) in
+      Cstruct.memset buf 0;
       match Tcp_packet.Marshal.into_cstruct header buf ~pseudoheader ~payload with
       | Error s ->
         Log.err (fun l -> l "Error writing TCP packet header: %s" s) ;
         0
         (* TODO: better to avoid this entirely, now we're sending empty IP
              frame and drop the payload.. oops *)
-      | Ok l ->
-        Cstruct.blit payload 0 buf l (Cstruct.length payload) ;
-        MProf.Counter.increase count_tcp_to_ip
-          (Cstruct.length payload + if syn then 1 else 0) ;
-        tcp_size
+      | Ok _l -> tcp_size
     in
-    Ip.write ip ~fragment:false ~src dst `TCP ~size:tcp_size fill_buffer [] >|= function
-    | Ok () -> Ok ()
-    (* swallow errors so normal recovery mechanisms can be used *)
-    (* For errors which aren't transient, or are too long-lived for TCP to recover
-     * from, this will eventually result in a higher-level notification
-     * that communication over the TCP flow has failed *)
-    | Error e ->
-      Log.warn (fun l -> l "Error sending TCP packet via IP: %a" Ip.pp_error e);
-      Ok ()
+    try 
+      Ip.write ip ~fragment:false ~src dst `TCP ~size:tcp_size fill_buffer [payload] 
+    with
+    | exn ->
+      (* swallow errors so normal recovery mechanisms can be used *)
+      (* For errors which aren't transient, or are too long-lived for TCP to recover
+       * from, this will eventually result in a higher-level notification
+       * that communication over the TCP flow has failed *)
+      Log.warn (fun l -> l "Error sending TCP packet via IP: %s" (Printexc.to_string exn));
+
 end

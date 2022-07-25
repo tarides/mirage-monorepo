@@ -71,14 +71,10 @@ module Suspended = struct
     | Error x -> discontinue t x
 end
 
-type runnable =
-  | IO
-  | Thread of (unit -> unit)
-
 type t = {
   loop : Luv.Loop.t;
   async : Luv.Async.t;                          (* Will process [run_q] when prodded. *)
-  run_q : runnable Lf_queue.t;
+  run_q : (unit -> unit) Lf_queue.t;
 }
 
 type _ Effect.t += Await : (Luv.Loop.t -> Eio.Private.Fiber_context.t -> ('a -> unit) -> unit) -> 'a Effect.t
@@ -90,20 +86,20 @@ let enter fn = Effect.perform (Enter fn)
 let enter_unchecked fn = Effect.perform (Enter_unchecked fn)
 
 let enqueue_thread t k v =
-  Lf_queue.push t.run_q (Thread (fun () -> Suspended.continue k v));
+  Lf_queue.push t.run_q (fun () -> Suspended.continue k v);
   Luv.Async.send t.async |> or_raise
 
 let enqueue_result_thread t k r =
-  Lf_queue.push t.run_q (Thread (fun () -> Suspended.continue_result k r));
+  Lf_queue.push t.run_q (fun () -> Suspended.continue_result k r);
   Luv.Async.send t.async |> or_raise
 
 let enqueue_failed_thread t k ex =
-  Lf_queue.push t.run_q (Thread (fun () -> Suspended.discontinue k ex));
+  Lf_queue.push t.run_q (fun () -> Suspended.discontinue k ex);
   Luv.Async.send t.async |> or_raise
 
 (* Can only be called from our domain. *)
 let enqueue_at_head t k v =
-  Lf_queue.push_head t.run_q (Thread (fun () -> Suspended.continue k v));
+  Lf_queue.push_head t.run_q (fun () -> Suspended.continue k v);
   Luv.Async.send t.async |> or_raise
 
 let get_loop () =
@@ -252,31 +248,6 @@ module Low_level = struct
       let request = Luv.File.Request.make () in
       await_with_cancel ~request (fun loop -> Luv.File.mkdir ~loop ~request ~mode path)
 
-    let opendir path =
-      let request = Luv.File.Request.make () in
-      await_with_cancel ~request (fun loop -> Luv.File.opendir ~loop ~request path)
-
-    let closedir path =
-      let request = Luv.File.Request.make () in
-      await_with_cancel ~request (fun loop -> Luv.File.closedir ~loop ~request path)
-
-    let with_dir_to_read path fn =
-      match opendir path with
-      | Ok dir ->
-        Fun.protect ~finally:(fun () -> closedir dir |> or_raise) @@ fun () -> fn dir 
-      | Error _ as e -> e
-
-    let readdir path =
-      let fn dir =
-        let request = Luv.File.Request.make () in
-        match await_with_cancel ~request (fun loop -> Luv.File.readdir ~loop ~request dir) with
-        | Ok dirents ->
-          let dirs = Array.map (fun v -> v.Luv.File.Dirent.name) dirents |> Array.to_list in
-          Ok dirs 
-        | Error _ as e -> e
-      in
-        with_dir_to_read path fn
-
     let to_unix op t =
       let os_fd = Luv.File.get_osfhandle (get "to_unix" t) |> or_raise in
       let fd = Luv_unix.Os_fd.Fd.to_unix os_fd in
@@ -289,12 +260,9 @@ module Low_level = struct
   end
 
   module Random = struct
-    let rec fill buf =
+    let fill buf =
       let request = Luv.Random.Request.make () in
-      match await_with_cancel ~request (fun loop -> Luv.Random.random ~loop ~request buf) with
-      | Ok x -> x 
-      | Error `EINTR -> fill buf
-      | Error x -> raise (Luv_error x)
+      await_with_cancel ~request (fun loop -> Luv.Random.random ~loop ~request buf) |> or_raise
   end
 
   module Stream = struct
@@ -550,8 +518,6 @@ end
 let udp_socket endp = object
   inherit Eio.Net.datagram_socket
 
-  method close = Handle.close endp
-
   method send sockaddr bufs = Udp.send endp bufs sockaddr 
   method recv buf = 
     let buf = Cstruct.to_bigarray buf in
@@ -751,10 +717,6 @@ class dir dir_path = object (self)
     let real_path = self#resolve_new path in
     File.mkdir ~mode:[`NUMERIC perm] real_path |> or_raise_path path
 
-  method read_dir path =
-    let path = self#resolve path in
-    File.readdir path |> or_raise_path path
-
   method close = ()
 end
 
@@ -786,21 +748,16 @@ let stdenv ~run_event_loop =
     method secure_random = secure_random
   end
 
-let rec wakeup ~async run_q =
+let rec wakeup run_q =
   match Lf_queue.pop run_q with
-  | Some (Thread f) -> f (); wakeup ~async run_q
-  | Some IO when Lf_queue.is_empty run_q -> ()
-  | Some IO ->
-    Lf_queue.push run_q IO;
-    Luv.Async.send async |> or_raise
+  | Some f -> f (); wakeup run_q
   | None -> ()
 
 let rec run main =
   Log.debug (fun l -> l "starting run");
   let loop = Luv.Loop.init () |> or_raise in
   let run_q = Lf_queue.create () in
-  Lf_queue.push run_q IO;
-  let async = Luv.Async.init ~loop (fun async -> wakeup ~async run_q) |> or_raise in
+  let async = Luv.Async.init ~loop (fun _async -> wakeup run_q) |> or_raise in
   let st = { loop; async; run_q } in
   let stdenv = stdenv ~run_event_loop:run in
   let rec fork ~new_fiber:fiber fn =
@@ -816,7 +773,7 @@ let rec run main =
             let k = { Suspended.k; fiber } in
             fn loop fiber (enqueue_thread st k))
         | Eio.Private.Effects.Trace ->
-          Some (fun k -> continue k Eio.Private.default_traceln)
+          Some (fun k -> continue k Eio_utils.Trace.default_traceln)
         | Eio.Private.Effects.Fork (new_fiber, f) ->
           Some (fun k -> 
               let k = { Suspended.k; fiber } in

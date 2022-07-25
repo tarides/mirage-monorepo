@@ -18,55 +18,54 @@
 
 module Packet = struct
   type proto = Ethernet_packet.proto
+
   let pp_proto = Ethernet_packet.pp_proto
 
-  type t = Ethernet_packet.t =  {
+  type t = Ethernet_packet.t = {
     source : Macaddr.t;
     destination : Macaddr.t;
     ethertype : proto;
   }
 
-
   let sizeof_ethernet = Ethernet_wire.sizeof_ethernet
-
   let of_cstruct = Ethernet_packet.Unmarshal.of_cstruct
-
   let into_cstruct = Ethernet_packet.Marshal.into_cstruct
-
   let make_cstruct = Ethernet_packet.Marshal.make_cstruct
 end
 
+exception Exceeds_mtu
+
 module type S = sig
-  type nonrec error = private [> `Exceeds_mtu ]
-  val pp_error: error Fmt.t
   type t
-  val disconnect : t -> unit Lwt.t
-  val write: t -> ?src:Macaddr.t -> Macaddr.t -> Packet.proto -> ?size:int ->
-    (Cstruct.t -> int) -> (unit, error) result Lwt.t
-  val mac: t -> Macaddr.t
-  val mtu: t -> int
-  val input:
-    arpv4:(Cstruct.t -> unit Lwt.t) ->
-    ipv4:(Cstruct.t -> unit Lwt.t) ->
-    ipv6:(Cstruct.t -> unit Lwt.t) ->
-    t -> Cstruct.t -> unit Lwt.t
+
+  val disconnect : t -> unit
+
+  val writev :
+    t ->
+    ?src:Macaddr.t ->
+    Macaddr.t ->
+    Packet.proto ->
+    Cstruct.t list ->
+    unit
+
+  val mac : t -> Macaddr.t
+  val mtu : t -> int
+
+  val input :
+    arpv4:(Cstruct.t -> unit) ->
+    ipv4:(Cstruct.t -> unit) ->
+    ipv6:(Cstruct.t -> unit) ->
+    t ->
+    Cstruct.t ->
+    unit
 end
 
-open Lwt.Infix
-
 let src = Logs.Src.create "ethernet" ~doc:"Mirage Ethernet"
+
 module Log = (val Logs.src_log src : Logs.LOG)
 
 module Make (Netif : Mirage_net.S) = struct
-
-  type error = [ `Exceeds_mtu | `Netif of Netif.error ]
-  let pp_error ppf = function
-    | `Exceeds_mtu -> Fmt.string ppf "exceeds MTU"
-    | `Netif e -> Netif.pp_error ppf e
-
-  type t = {
-    netif: Netif.t;
-  }
+  type t = { netif : Netif.t; }
 
   let mac t = Netif.mac t.netif
   let mtu t = Netif.mtu t.netif (* interface MTU excludes Ethernet header *)
@@ -78,55 +77,40 @@ module Make (Netif : Mirage_net.S) = struct
       Macaddr.compare dest (mac t) = 0 || not (Macaddr.is_unicast dest)
     in
     match Unmarshal.of_cstruct frame with
-    | Ok (header, payload) when of_interest header.destination ->
-      begin
+    | Ok (header, payload) when of_interest header.destination -> (
         match header.Ethernet_packet.ethertype with
         | `ARP -> arpv4 payload
         | `IPv4 -> ipv4 payload
-        | `IPv6 -> ipv6 payload
-      end
-    | Ok _ -> Lwt.return_unit
-    | Error s ->
-      Log.debug (fun f -> f "dropping Ethernet frame: %s" s);
-      Lwt.return_unit
+        | `IPv6 -> ipv6 payload)
+    | Ok _ -> ()
+    | Error s -> Log.debug (fun f -> f "dropping Ethernet frame: %s" s)
 
-  let write t ?src destination ethertype ?size payload =
+  let writev t ?src destination ethertype payload =
     MProf.Trace.label "ethernet.write";
     let source = match src with None -> mac t | Some x -> x
     and eth_hdr_size = Ethernet_wire.sizeof_ethernet
-    and mtu = mtu t
-    in
-    match
-      match size with
-      | None -> Ok mtu
-      | Some s -> if s > mtu then Error () else Ok s
-    with
-    | Error () -> Lwt.return (Error `Exceeds_mtu)
-    | Ok size ->
-      let size = eth_hdr_size + size in
-      let hdr = { Ethernet_packet.source ; destination ; ethertype } in
-      let fill frame =
-        match Ethernet_packet.Marshal.into_cstruct hdr frame with
-        | Error msg ->
-          Log.err (fun m -> m "error %s while marshalling ethernet header into allocated buffer" msg);
-          0
-        | Ok () ->
-          let len = payload (Cstruct.shift frame eth_hdr_size) in
-          eth_hdr_size + len
-      in
-      Netif.write t.netif ~size fill >|= function
-      | Ok () -> Ok ()
-      | Error e ->
-        Log.warn (fun f -> f "netif write errored %a" Netif.pp_error e) ;
-        Error (`Netif e)
+    and mtu = mtu t in
+    if Cstruct.lenv payload > mtu then
+      raise Exceeds_mtu;
+    let hdr = { Ethernet_packet.source; destination; ethertype } in
+    let header_buffer = Cstruct.create_unsafe eth_hdr_size in 
+    match Ethernet_packet.Marshal.into_cstruct hdr header_buffer with
+    | Error msg ->
+        Log.err (fun m ->
+            m
+              "error %s while marshalling ethernet header into allocated \
+                buffer"
+              msg);
+        failwith "todo"
+    | Ok () -> Netif.writev t.netif (header_buffer::payload)
 
   let connect netif =
     MProf.Trace.label "ethernet.connect";
     let t = { netif } in
     Log.info (fun f -> f "Connected Ethernet interface %a" Macaddr.pp (mac t));
-    Lwt.return t
+    t
 
   let disconnect t =
-    Log.info (fun f -> f "Disconnected Ethernet interface %a" Macaddr.pp (mac t));
-    Lwt.return_unit
+    Log.info (fun f ->
+        f "Disconnected Ethernet interface %a" Macaddr.pp (mac t))
 end

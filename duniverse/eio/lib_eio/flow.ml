@@ -1,7 +1,7 @@
 type shutdown_command = [ `Receive | `Send | `All ]
 
 type read_method = ..
-type read_method += Read_source_buffer of ((Cstruct.t list -> int) -> unit)
+type read_method += Read_source_buffer of ((Cstruct.t list -> unit) -> unit)
 
 class type close = object
   method close : unit
@@ -39,9 +39,7 @@ let cstruct_source data : source =
         match data with
         | [] -> raise End_of_file
         | x :: xs when Cstruct.length x = 0 -> data <- xs; aux ()
-        | xs ->
-          let n = fn xs in
-          data <- Cstruct.shiftv xs n 
+        | xs -> data <- []; fn xs
       in
       aux ()
 

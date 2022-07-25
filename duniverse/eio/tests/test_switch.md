@@ -1,14 +1,14 @@
 # Setting up the environment
 
 ```ocaml
-# #require "eio.mock";;
+# #require "eio_main";;
 ```
 
 ```ocaml
 open Eio.Std
 
-let run (fn : Switch.t -> _) =
-  Eio_mock.Backend.run @@ fun () ->
+let run (fn : Switch.t -> unit) =
+  Eio_main.run @@ fun _e ->
   Switch.run fn
 ```
 
@@ -125,7 +125,10 @@ Exception: Failure "Cancel".
 You can't use a switch after leaving its scope:
 
 ```ocaml
-# let sw = run Fun.id;;
+# let sw =
+    let x = ref None in
+    run (fun sw -> x := Some sw);
+    Option.get !x;;
 val sw : Switch.t = <abstr>
 # Switch.check sw;;
 Exception: Invalid_argument "Switch finished!".

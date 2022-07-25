@@ -1,6 +1,6 @@
 ## ARP - Address Resolution Protocol purely in OCaml
 
-v3.0.0
+%%VERSION%%
 
 ARP is an implementation of the address resolution protocol (RFC826) purely in
 OCaml.  It handles IPv4 protocol addresses and Ethernet hardware addresses only.

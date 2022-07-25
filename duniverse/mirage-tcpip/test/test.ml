@@ -23,18 +23,17 @@ let suite = [
   "tcp_window"     , Test_tcp_window.suite  ;
   "tcp_options"    , Test_tcp_options.suite ;
   "mtu+tcp"        , Test_mtus.suite        ;
-  "rfc5961"        , Test_rfc5961.suite     ;
-  "socket"         , Test_socket.suite      ;
+  "rfc5961"        , Test_rfc5961.suite     ; 
+ (* "socket"         , Test_socket.suite      ;*)
   "connect"        , Test_connect.suite     ;
-  "connect_ipv6"   , Test_connect_ipv6.suite     ;
+  "connect_ipv6"   , Test_connect_ipv6.suite;
   "deadlock"       , Test_deadlock.suite    ;
   "iperf"          , Test_iperf.suite       ;
-  "iperf_ipv6"     , Test_iperf_ipv6.suite       ;
+  "iperf_ipv6"     , Test_iperf_ipv6.suite  ;
   "keepalive"      , Test_keepalive.suite   ;
 ]
 
-let run test () =
-  Lwt_main.run (test ())
+let run test () = test ()
 
 let () =
   Printexc.record_backtrace true;

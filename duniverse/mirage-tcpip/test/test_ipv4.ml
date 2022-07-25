@@ -8,8 +8,7 @@ let test_unmarshal_with_options () =
   match Ipv4_packet.Unmarshal.of_cstruct datagram with
   | Ok ({Ipv4_packet.options ; _}, payload) ->
       Alcotest.(check int) "options" (Cstruct.length options) 4;
-      Alcotest.(check int) "payload" (Cstruct.length payload) 16;
-      Lwt.return_unit
+      Alcotest.(check int) "payload" (Cstruct.length payload) 16
   | _ ->
       Alcotest.fail "Fail to parse ip packet with options"
 
@@ -22,8 +21,7 @@ let test_unmarshal_without_options () =
   match Ipv4_packet.Unmarshal.of_cstruct datagram with
   | Ok ({Ipv4_packet.options ; _}, payload) ->
       Alcotest.(check int) "options" (Cstruct.length options) 0;
-      Alcotest.(check int) "payload" (Cstruct.length payload) 20;
-      Lwt.return_unit
+      Alcotest.(check int) "payload" (Cstruct.length payload) 20
   | _ ->
       Alcotest.fail "Fail to parse ip packet with options"
 
@@ -31,8 +29,7 @@ let test_unmarshal_regression () =
   let p = Cstruct.of_string "\x49\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30" in
   Alcotest.(check (result reject pass))
     "correctly return error for bad packet"
-    (Error "any") (Ipv4_packet.Unmarshal.of_cstruct p);
-  Lwt.return_unit
+    (Error "any") (Ipv4_packet.Unmarshal.of_cstruct p)
 
 let test_size () =
   let src = Ipaddr.V4.of_string_exn "127.0.0.1" in
@@ -43,8 +40,7 @@ let test_size () =
   let tmp = Ipv4_packet.Marshal.make_cstruct ~payload_len:(Cstruct.length payload) ip in
   let tmp = Cstruct.concat [tmp; payload] in
   Ipv4_packet.Unmarshal.of_cstruct tmp
-  |> Alcotest.(check (result (pair ipv4_packet cstruct) string)) "Loading an IP packet with IP options" (Ok (ip, payload));
-  Lwt.return_unit
+  |> Alcotest.(check (result (pair ipv4_packet cstruct) string)) "Loading an IP packet with IP options" (Ok (ip, payload))
 
 let test_packet =
   let src = Ipaddr.V4.of_string_exn "127.0.0.1" in
@@ -73,8 +69,7 @@ let basic_fragments payload () =
   let off_packet = { test_packet with off = 1 } in
   Alcotest.(check (option (pair ipv4_packet cstruct)) __LOC__
               None
-              (snd @@ Fragments.process empty_cache 0L off_packet payload)) ;
-  Lwt.return_unit
+              (snd @@ Fragments.process empty_cache 0L off_packet payload)) 
 
 let basic_reassembly () =
   let more_frags = { test_packet with off = mf } in
@@ -83,8 +78,7 @@ let basic_reassembly () =
   let off_packet = { test_packet with off = 2 } in
   Alcotest.(check (option (pair ipv4_packet cstruct)) "reassembly of two segments works"
               (Some (test_packet, Cstruct.append black white))
-              (snd @@ Fragments.process cache 0L off_packet white)) ;
-  Lwt.return_unit
+              (snd @@ Fragments.process cache 0L off_packet white)) 
 
 let basic_reassembly_timeout () =
   let more_frags = { test_packet with off = mf } in
@@ -108,8 +102,7 @@ let basic_reassembly_timeout () =
   Alcotest.(check (option (pair ipv4_packet cstruct)) __LOC__
               None
               (snd @@ Fragments.process cache Fragments.max_duration off_packet white)) ;
-  Alcotest.(check (option (pair ipv4_packet cstruct)) __LOC__ None res) ;
-  Lwt.return_unit
+  Alcotest.(check (option (pair ipv4_packet cstruct)) __LOC__ None res) 
 
 let reassembly_out_of_order () =
   let more_frags = { test_packet with off = mf } in
@@ -118,8 +111,7 @@ let reassembly_out_of_order () =
   Alcotest.(check (option (pair ipv4_packet cstruct)) __LOC__ None res) ;
   Alcotest.(check (option (pair ipv4_packet cstruct)) "reassembly of two segments works"
               (Some (test_packet, Cstruct.append black gray))
-              (snd @@ Fragments.process cache 0L more_frags black)) ;
-  Lwt.return_unit
+              (snd @@ Fragments.process cache 0L more_frags black)) 
 
 let reassembly_multiple_out_of_order packets final_payload () =
   let _, res = List.fold_left (fun (cache, res) (off, payload) ->
@@ -130,8 +122,7 @@ let reassembly_multiple_out_of_order packets final_payload () =
   in
   Alcotest.(check (option (pair ipv4_packet cstruct)) __LOC__
               (Some (test_packet, final_payload))
-              res) ;
-  Lwt.return_unit
+              res) 
 
 let basic_overlaps () =
   let more_frags = { test_packet with off = mf } in
@@ -139,8 +130,7 @@ let basic_overlaps () =
   let cache, res = Fragments.process empty_cache 0L off_packet black in
   Alcotest.(check (option (pair ipv4_packet cstruct)) __LOC__ None res) ;
   Alcotest.(check (option (pair ipv4_packet cstruct)) __LOC__ None
-              (snd @@ Fragments.process cache 0L more_frags white)) ;
-  Lwt.return_unit
+              (snd @@ Fragments.process cache 0L more_frags white)) 
 
 let basic_other_ip_flow () =
   let more_frags = { test_packet with off = mf } in
@@ -151,8 +141,7 @@ let basic_other_ip_flow () =
               (snd @@ Fragments.process cache 0L off_packet white)) ;
   let off_packet' = { test_packet with off = 2 ; proto = 25 } in
   Alcotest.(check (option (pair ipv4_packet cstruct)) __LOC__ None
-              (snd @@ Fragments.process cache 0L off_packet' white)) ;
-  Lwt.return_unit
+              (snd @@ Fragments.process cache 0L off_packet' white)) 
 
 let max_fragment () =
   let all_16 = [ white; gray; black; white;
@@ -176,8 +165,7 @@ let max_fragment () =
   Alcotest.(check (option (pair ipv4_packet cstruct)) __LOC__ None res) ;
   Alcotest.(check (option (pair ipv4_packet cstruct)) __LOC__
               None
-              (snd @@ Fragments.process cache 0L { test_packet with off = off + 2 } black)) ;
-  Lwt.return_unit
+              (snd @@ Fragments.process cache 0L { test_packet with off = off + 2 } black)) 
 
 let none_returned packets () =
   let _, res = List.fold_left (fun (cache, res) (off, payload) ->
@@ -186,8 +174,7 @@ let none_returned packets () =
       Fragments.process cache 0L packet payload)
       (empty_cache, None) packets
   in
-  Alcotest.(check (option (pair ipv4_packet cstruct)) __LOC__ None res) ;
-  Lwt.return_unit
+  Alcotest.(check (option (pair ipv4_packet cstruct)) __LOC__ None res) 
 
 let ins_all_positions x l =
   let rec aux prev acc = function
@@ -208,14 +195,14 @@ let fragment_simple () =
       id = 0x42 ; off = 0 ; ttl = 10 ; proto = 10 ; options = Cstruct.empty }
   in
   let payload = Cstruct.create 1030 in
-  let fs = Fragments.fragment ~mtu:36 hdr payload in
+  let fs = Fragments.fragment ~mtu:36 hdr [payload] in
   (* 16 byte per packet -> 64 fragments (a 16 byte) + 1 (6 byte) *)
   Alcotest.(check int __LOC__ 65 (List.length fs));
   let second, last = List.hd fs, List.(hd (rev fs)) in
-  Alcotest.(check int __LOC__ 26 (Cstruct.length last));
+  Alcotest.(check int __LOC__ 26 (Cstruct.lenv last));
   match
-    Ipv4_packet.Unmarshal.of_cstruct second,
-    Ipv4_packet.Unmarshal.of_cstruct last
+    Ipv4_packet.Unmarshal.of_cstruct (Cstruct.concat second),
+    Ipv4_packet.Unmarshal.of_cstruct (Cstruct.concat last)
   with
   | Error e, _ -> Alcotest.fail ("failed to decode second fragment " ^ e)
   | _, Error e -> Alcotest.fail ("failed to decode last fragment " ^ e)
@@ -224,14 +211,14 @@ let fragment_simple () =
     Alcotest.(check int __LOC__ 0x42 hdr.Ipv4_packet.id);
     Alcotest.(check int __LOC__ 130 hdr'.Ipv4_packet.off);
     Alcotest.(check int __LOC__ 0x42 hdr'.Ipv4_packet.id);
-    let fs' = Fragments.fragment ~mtu:36 hdr (Cstruct.sub payload 0 1024) in
+    let fs' = Fragments.fragment ~mtu:36 hdr ([Cstruct.sub payload 0 1024]) in
     (* 16 byte per packet -> 64 fragments (a 16 byte) *)
     Alcotest.(check int __LOC__ 64 (List.length fs'));
     let second', last' = List.hd fs', List.(hd (rev fs')) in
-    Alcotest.(check int __LOC__ 36 (Cstruct.length last'));
+    Alcotest.(check int __LOC__ 36 (Cstruct.lenv last'));
     match
-      Ipv4_packet.Unmarshal.of_cstruct second',
-      Ipv4_packet.Unmarshal.of_cstruct last'
+      Ipv4_packet.Unmarshal.of_cstruct (Cstruct.concat second'),
+      Ipv4_packet.Unmarshal.of_cstruct (Cstruct.concat last')
     with
     | Error e, _ -> Alcotest.fail ("failed to decode second fragment' " ^ e)
     | _, Error e -> Alcotest.fail ("failed to decode last fragment' " ^ e)
@@ -299,5 +286,5 @@ let suite = [
       permutations [ (mf, gray); (1 lor mf, white); (3 lor mf, black); (5, gray)] @
       permutations [ (mf, gray); (2 lor mf, white); (4 lor mf, black); (7, gray)]
     ) @ [
-    "simple fragment", `Quick, (fun () -> Lwt.return (fragment_simple ()))
+    "simple fragment", `Quick, (fun () -> fragment_simple ())
   ]

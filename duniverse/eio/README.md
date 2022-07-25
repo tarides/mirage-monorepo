@@ -24,8 +24,7 @@ Eio replaces existing concurrency libraries such as Lwt
 * [Performance](#performance)
 * [Networking](#networking)
 * [Design Note: Capabilities](#design-note-capabilities)
-* [Buffered Reading and Parsing](#buffered-reading-and-parsing)
-* [Buffered Writing](#buffered-writing)
+* [Buffering and Parsing](#buffering-and-parsing)
 * [Filesystem Access](#filesystem-access)
 * [Time](#time)
 * [Multicore Support](#multicore-support)
@@ -66,7 +65,7 @@ and we hope that Eio will be that API.
 
 ## Current Status
 
-Eio can be used with OCaml 5.0.0+trunk or with 4.12.0+domains.
+Eio can be used with OCaml 5.00.0+trunk or with 4.12.0+domains.
 
 Eio is able to run a web-server with [good performance][http-bench],
 but you are likely to encounter missing features while using it.
@@ -85,7 +84,7 @@ Feature status:
 
 - Concurrency primitives: Fibers, cancellation, promises, streams and semaphores are all working.
 - Multicore support: Working.
-- Networking: Clients and servers using TCP and Unix domain sockets work. UDP also works.
+- Networking: Clients and servers using TCP and Unix domain sockets work. UDP not yet done.
 - File-systems: Can create files and directories, load, save, parse, etc. Most other operations missing.
 - Spawning sub-processes: Not implemented yet.
 
@@ -102,32 +101,19 @@ See [Awesome Multicore OCaml][] for links to work migrating other projects to Ei
 ## Getting Started
 
 You'll need a version of the OCaml compiler with effects.
-`5.0.0+trunk` often works but is a moving target, so we suggest using `4.12.0+domains` for now
-(however, this only supports x86_64 systems).
+`5.00.0+trunk` often works but is a moving target, so we suggest using `4.12.0+domains` for now.
 You can get it like this:
 
 ```
 opam switch create 4.12.0+domains --repositories=multicore=git+https://github.com/ocaml-multicore/multicore-opam.git,default
 ```
 
-To use 5.0.0~alpha0 (which is needed on ARM), use this command instead:
-
-```
-opam switch create 5.0.0~alpha0 --repo=default,alpha=git+https://github.com/kit-ty-kate/opam-alpha-repository.git
-```
-
-If you want to run the latest development version from Git, run these commands
-(otherwise, skip them and you'll get the latest release from opam):
+Then you'll need to install this library (and `utop` if you want to try it interactively):
 
 ```
 git clone https://github.com/ocaml-multicore/eio.git
 cd eio
 opam pin -yn .
-```
-
-Finally, install this library (and `utop` if you want to try it interactively):
-
-```
 opam depext -i eio_main utop		# (for opam 2.0)
 opam install eio_main utop		# (for opam 2.1)
 ```
@@ -186,17 +172,6 @@ For example, instead of giving `main` the real standard output, we can have it w
 
 [Eio.traceln][] provides convenient printf-style debugging, without requiring you to plumb `stderr` through your code.
 It uses the `Format` module, so you can use the extended formatting directives here too.
-
-The [Eio_mock][] library provides some convenient pre-built mocks:
-
-```ocaml
-# #require "eio.mock";;
-# Eio_main.run @@ fun _env ->
-  let mock_stdout = Eio_mock.Flow.make "mock-stdout" in
-  main ~stdout:mock_stdout;;
-+mock-stdout: wrote "Hello, world!\n"
-- : unit = ()
-```
 
 ## Fibers
 
@@ -430,7 +405,7 @@ Note that not all cases are well-optimised yet, but the idea is for each backend
 
 ## Networking
 
-Eio provides an API for [networking][Eio.Net].
+Eio provides a simple high-level API for [networking][Eio.Net].
 Here is a client that connects to address `addr` using network `net` and sends a message:
 
 ```ocaml
@@ -443,27 +418,12 @@ let run_client ~net ~addr =
 
 Note: the `flow` is attached to `sw` and will be closed automatically when it finishes.
 
-We can test it using a mock network:
-
-```ocaml
-# Eio_main.run @@ fun _env ->
-  let net = Eio_mock.Net.make "mocknet" in
-  let socket = Eio_mock.Flow.make "socket" in
-  Eio_mock.Net.on_connect net [`Return socket];
-  run_client ~net ~addr:(`Tcp (Eio.Net.Ipaddr.V4.loopback, 8080));; 
-+Connecting to server...
-+mocknet: connect to tcp:127.0.0.1:8080
-+socket: wrote "Hello from client"
-+socket: closed
-- : unit = ()
-```
-
 Here is a server that listens on `socket` and handles a single connection by reading a message:
 
 ```ocaml
 let run_server socket =
   Switch.run @@ fun sw ->
-  Eio.Net.accept_fork socket ~sw (fun flow _addr ->
+  Eio.Net.accept_sub socket ~sw (fun ~sw flow _addr ->
     traceln "Server accepted connection from client";
     let b = Buffer.create 100 in
     Eio.Flow.copy flow (Eio.Flow.buffer_sink b);
@@ -474,35 +434,11 @@ let run_server socket =
 
 Notes:
 
-- `accept_fork` handles the connection in a new fiber.
-- Normally, a server would call `accept_fork` in a loop to handle multiple connections.
-- When the handler passed to `accept_fork` finishes, `flow` is closed automatically.
+- `accept_sub` handles the connection in a new fiber, with its own subswitch.
+- Normally, a server would call `accept_sub` in a loop to handle multiple connections.
+- When the child switch created by `accept_sub` finishes, `flow` is closed automatically.
 
-This can also be tested on its own using a mock network:
-
-```ocaml
-# Eio_main.run @@ fun _env ->
-  let listening_socket = Eio_mock.Net.listening_socket "tcp/80" in
-  let mock_addr = `Tcp (Eio.Net.Ipaddr.V4.loopback, 37568) in
-  let connection = Eio_mock.Flow.make "connection" in
-  Eio_mock.Net.on_accept listening_socket [`Return (connection, mock_addr)];
-  Eio_mock.Flow.on_read connection [
-    `Return "(packet 1)";
-    `Yield_then (`Return "(packet 2)");
-    `Raise End_of_file;
-  ];
-  run_server listening_socket;;
-+tcp/80: accepted connection from tcp:127.0.0.1:37568
-+Server accepted connection from client
-+connection: read "(packet 1)"
-+(normally we'd loop and accept more connections here)
-+connection: read "(packet 2)"
-+Server received: "(packet 1)(packet 2)"
-+connection: closed
-- : unit = ()
-```
-
-We can now run them together using the real network (in a single process) using `Fiber.both`:
+We can test them in a single process using `Fiber.both`:
 
 ```ocaml
 let main ~net ~addr =
@@ -581,7 +517,7 @@ However, it still makes non-malicious code easier to understand and test
 and may allow for an extension to the language in the future.
 See [Emily][] for a previous attempt at this.
 
-## Buffered Reading and Parsing
+## Buffering and Parsing
 
 Reading from an Eio flow directly may give you more or less data than you wanted.
 For example, if you want to read a line of text from a TCP stream,
@@ -658,53 +594,6 @@ let message =
 +Alice sent "Hello!\n"
 - : unit = ()
 ```
-
-## Buffered Writing
-
-For performance, it's often useful to batch up writes and send them all in one go.
-For example, consider sending an HTTP response without buffering:
-
-```ocaml
-let send_response socket =
-  Eio.Flow.copy_string "200 OK\r\n" socket;
-  Eio.Flow.copy_string "\r\n" socket;
-  Fiber.yield ();       (* Simulate waiting for the body *)
-  Eio.Flow.copy_string "Body data" socket
-```
-
-```ocaml
-# Eio_main.run @@ fun _ ->
-  send_response (Eio_mock.Flow.make "socket");;
-+socket: wrote "200 OK\r\n"
-+socket: wrote "\r\n"
-+socket: wrote "Body data"
-- : unit = ()
-```
-
-The socket received three writes, perhaps sending three separate packets over the network.
-We can wrap a flow with [Eio.Buf_write][] to avoid this:
-
-```ocaml
-module Write = Eio.Buf_write
-let send_response socket =
-  Write.with_flow socket @@ fun w ->
-  Write.string w "200 OK\r\n";
-  Write.string w "\r\n";
-  Fiber.yield ();       (* Simulate waiting for the body *)
-  Write.string w "Body data"
-```
-
-```ocaml
-# Eio_main.run @@ fun _ ->
-  send_response (Eio_mock.Flow.make "socket");;
-+socket: wrote "200 OK\r\n"
-+              "\r\n"
-+socket: wrote "Body data"
-- : unit = ()
-```
-
-Now the first two writes were combined and sent together.
-
 
 ## Filesystem Access
 
@@ -1218,7 +1107,7 @@ This may be useful during the process of porting existing code to Eio.
 
 - [lib_eio/eio.mli](lib_eio/eio.mli) documents Eio's public API.
 - [doc/rationale.md](doc/rationale.md) describes some of Eio's design tradeoffs in more detail.
-- [lib_eio/mock/backend.ml](lib_eio/mock/backend.ml) is a skeleton Eio backend with no actual IO.
+- [doc/eio_null.md](doc/eio_null.md) is a skeleton Eio backend with no actual IO.
 
 Some background about the effects system can be found in:
 
@@ -1229,7 +1118,7 @@ Some background about the effects system can be found in:
 - [Concurrent System Programming with Effect Handlers](https://www.repository.cam.ac.uk/bitstream/handle/1810/283239/paper.pdf?sequence=3&isAllowed=y)
 - [Asynchronous effect based IO using effect handlers](https://github.com/kayceesrk/ocaml-aeio)
 
-[Lwt_eio]: https://github.com/ocaml-multicore/lwt_eio
+[Lwt_eio]: https://github.com/talex5/lwt_eio
 [mirage-trace-viewer]: https://github.com/talex5/mirage-trace-viewer
 [structured concurrency]: https://en.wikipedia.org/wiki/Structured_concurrency
 [typed effects]: https://www.janestreet.com/tech-talks/effective-programming/
@@ -1246,7 +1135,6 @@ Some background about the effects system can be found in:
 [Eio.Switch]: https://ocaml-multicore.github.io/eio/eio/Eio/Switch/index.html
 [Eio.Net]: https://ocaml-multicore.github.io/eio/eio/Eio/Net/index.html
 [Eio.Buf_read]: https://ocaml-multicore.github.io/eio/eio/Eio/Buf_read/index.html
-[Eio.Buf_write]: https://ocaml-multicore.github.io/eio/eio/Eio/Buf_write/index.html
 [Eio.Dir]: https://ocaml-multicore.github.io/eio/eio/Eio/Dir/index.html
 [Eio.Time]: https://ocaml-multicore.github.io/eio/eio/Eio/Time/index.html
 [Eio.Domain_manager]: https://ocaml-multicore.github.io/eio/eio/Eio/Domain_manager/index.html
@@ -1257,4 +1145,3 @@ Some background about the effects system can be found in:
 [Eio_main]: https://ocaml-multicore.github.io/eio/eio_main/Eio_main/index.html
 [Eio.traceln]: https://ocaml-multicore.github.io/eio/eio/Eio/index.html#val-traceln
 [Eio_main.run]: https://ocaml-multicore.github.io/eio/eio_main/Eio_main/index.html#val-run
-[Eio_mock]: https://github.com/ocaml-multicore/eio/blob/main/lib_eio/mock/eio_mock.mli

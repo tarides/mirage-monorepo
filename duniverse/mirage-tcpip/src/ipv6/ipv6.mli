@@ -16,14 +16,12 @@
 
 module Make (N : Mirage_net.S)
             (E : Ethernet.S)
-            (R : Mirage_random.S)
-            (T : Mirage_time.S)
-            (Clock : Mirage_clock.MCLOCK) : sig
+            (R : Mirage_random.S) : sig
   include Tcpip.Ip.S with type ipaddr = Ipaddr.V6.t
   val connect :
     ?no_init:bool ->
     ?handle_ra:bool ->
-    ?cidr:Ipaddr.V6.Prefix.t ->
-    ?gateway:Ipaddr.V6.t ->
-    N.t -> E.t -> t Lwt.t
+    ?cidr:Ndpv6.prefix ->
+    ?gateway:ipaddr ->
+    clock:Eio.Time.clock -> sw:Eio.Switch.t -> N.t -> E.t -> t
 end

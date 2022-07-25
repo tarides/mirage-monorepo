@@ -23,8 +23,8 @@ type tr =
   | Continue of Sequence.t
   | ContinueSetPeriod of (time * Sequence.t)
 
-module Make(T:Mirage_time.S) : sig
-  val t : period_ns: time -> expire: (Sequence.t -> tr Lwt.t) -> t
+(* create a timer and spawn an asynchronous listener thread for that timer *)
+val t : sw:Eio.Switch.t -> period_ns: time -> expire: (Sequence.t -> tr) -> clock:Eio.Time.clock -> t
 
-  val start : t -> ?p:time -> Sequence.t -> unit Lwt.t
-end
+(* if not running, wake the timer with the given sequence *)
+val restart : t -> ?p:time -> Sequence.t -> unit

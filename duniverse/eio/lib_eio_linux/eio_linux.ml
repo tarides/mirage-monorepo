@@ -128,7 +128,6 @@ type io_job =
   (* When done, remove the cancel_fn from [Suspended.t] and call the callback (unless cancelled). *)
 
 type runnable =
-  | IO : runnable
   | Thread : 'a Suspended.t * 'a -> runnable
   | Failed_thread : 'a Suspended.t * exn -> runnable
 
@@ -433,22 +432,16 @@ let rec schedule ({run_q; sleep_q; mem_q; uring; _} as st) : [`Exit_scheduler] =
   (* This is not a fair scheduler *)
   (* Wakeup any paused fibers *)
   match Lf_queue.pop run_q with
-  | None -> assert false    (* We should always have an IO job, at least *)
   | Some Thread (k, v) -> Suspended.continue k v               (* We already have a runnable task *)
   | Some Failed_thread (k, ex) -> Suspended.discontinue k ex
-  | Some IO -> (* Note: be sure to re-inject the IO task before continuing! *)
-    (* This is not a fair scheduler: timers always run before all other IO *)
+  | None ->
     let now = Unix.gettimeofday () in
     match Zzz.pop ~now sleep_q with
-    | `Due k ->
-      Lf_queue.push run_q IO;                   (* Re-inject IO job in the run queue *)
-      Suspended.continue k ()                   (* A sleeping task is now due *)
+    | `Due k -> Suspended.continue k ()                   (* A sleeping task is now due *)
     | `Wait_until _ | `Nothing as next_due ->
       (* Handle any pending events before submitting. This is faster. *)
       match Uring.peek uring with
-      | Some { data = runnable; result } ->
-        Lf_queue.push run_q IO;                   (* Re-inject IO job in the run queue *)
-        handle_complete st ~runnable result
+      | Some { data = runnable; result } -> handle_complete st ~runnable result
       | None ->
         let num_jobs = Uring.submit uring in
         st.io_jobs <- st.io_jobs + num_jobs;
@@ -459,10 +452,7 @@ let rec schedule ({run_q; sleep_q; mem_q; uring; _} as st) : [`Exit_scheduler] =
         in
         Log.debug (fun l -> l "scheduler: %d sub / %d total, timeout %s" num_jobs st.io_jobs
                       (match timeout with None -> "inf" | Some v -> string_of_float v));
-        if not (Lf_queue.is_empty st.run_q) then (
-          Lf_queue.push run_q IO;                   (* Re-inject IO job in the run queue *)
-          schedule st
-        ) else if timeout = None && st.io_jobs = 0 then (
+        if timeout = None && st.io_jobs = 0 then (
           (* Nothing further can happen at this point.
              If there are no events in progress but also still no memory available, something has gone wrong! *)
           assert (Queue.length mem_q = 0);
@@ -479,7 +469,6 @@ let rec schedule ({run_q; sleep_q; mem_q; uring; _} as st) : [`Exit_scheduler] =
             let result = Uring.wait ?timeout uring in
             Ctf.note_resume system_thread;
             Atomic.set st.need_wakeup false;
-            Lf_queue.push run_q IO;                   (* Re-inject IO job in the run queue *)
             match result with
             | None ->
               (* Woken by a timeout, which is now due, or by a signal. *)
@@ -490,7 +479,6 @@ let rec schedule ({run_q; sleep_q; mem_q; uring; _} as st) : [`Exit_scheduler] =
             (* Someone added a new job while we were setting [need_wakeup] to [true].
                They might or might not have seen that, so we can't be sure they'll send an event. *)
             Atomic.set st.need_wakeup false;
-            Lf_queue.push run_q IO;                   (* Re-inject IO job in the run queue *)
             schedule st
           )
         )
@@ -603,28 +591,24 @@ module Low_level = struct
       res
     )
 
-  let writev_single ?file_offset fd bufs =
+  let rec writev ?file_offset fd bufs =
     let res = enter (enqueue_writev (file_offset, fd, bufs)) in
     Log.debug (fun l -> l "writev: woken up after write");
     if res < 0 then (
       raise (Unix.Unix_error (Uring.error_of_errno res, "writev", ""))
     ) else (
-      res
+      match Cstruct.shiftv bufs res with
+      | [] -> ()
+      | bufs ->
+        let file_offset =
+          let module I63 = Optint.Int63 in
+          match file_offset with
+          | None -> None
+          | Some ofs when ofs = I63.minus_one -> Some I63.minus_one
+          | Some ofs -> Some (I63.add ofs (I63.of_int res))
+        in
+        writev ?file_offset fd bufs
     )
-
-  let rec writev ?file_offset fd bufs =
-    let bytes_written = writev_single ?file_offset fd bufs in
-    match Cstruct.shiftv bufs bytes_written with
-    | [] -> ()
-    | bufs ->
-      let file_offset =
-        let module I63 = Optint.Int63 in
-        match file_offset with
-        | None -> None
-        | Some ofs when ofs = I63.minus_one -> Some I63.minus_one
-        | Some ofs -> Some (I63.add ofs (I63.of_int bytes_written))
-      in
-      writev ?file_offset fd bufs
 
   let await_readable fd =
     let res = enter (enqueue_poll_add fd (Uring.Poll_mask.(pollin + pollerr))) in
@@ -738,8 +722,6 @@ module Low_level = struct
 
   external eio_getrandom : Cstruct.buffer -> int -> int -> int = "caml_eio_getrandom"
 
-  external eio_getdents : Unix.file_descr -> string list = "caml_eio_getdents"
-
   let getrandom { Cstruct.buffer; off; len } =
     eio_getrandom buffer off len
 
@@ -782,23 +764,6 @@ module Low_level = struct
       let client_addr = Uring.Sockaddr.get client_addr in
       client, client_addr
     )
-
-  let open_dir ?dir ~sw ~resolve path =
-    openat2 ~sw ~seekable:false ?dir path
-      ~access:`R
-      ~flags:Uring.Open_flags.(cloexec + directory)
-      ~perm:0
-      ~resolve
-
-  let read_dir fd =
-    let rec read_all acc fd =
-      match eio_getdents (FD.get "getdents" fd) with
-      | [] -> acc
-      | files ->
-        let files = List.filter (function ".." | "." -> false | _ -> true) files in
-        read_all (files @ acc) fd
-    in
-    Eio_unix.run_in_systhread (fun () -> read_all [] fd)
 end
 
 external eio_eventfd : int -> Unix.file_descr = "caml_eio_eventfd"
@@ -851,7 +816,7 @@ let fast_copy_try_splice src dst =
 let copy_with_rsb rsb dst =
   try
     while true do
-      rsb (Low_level.writev_single dst)
+      rsb (Low_level.writev dst)
     done
   with End_of_file -> ()
 
@@ -880,8 +845,6 @@ let fallback_copy src dst =
 
 let udp_socket sock = object
   inherit Eio.Net.datagram_socket
-
-  method close = FD.close sock
 
   method send sockaddr buf = 
     let addr = match sockaddr with 
@@ -1102,11 +1065,6 @@ class dir fd = object
   method mkdir ~perm path =
     Low_level.mkdir_beneath ~perm ?dir:fd path
 
-  method read_dir path =
-    Switch.run @@ fun sw ->
-    let fd = Low_level.open_dir ?dir:fd ~resolve:resolve_flags ~sw path in
-    Low_level.read_dir fd
-
   method close =
     FD.close (Option.get fd)
 end
@@ -1194,7 +1152,6 @@ let rec run ?(queue_depth=64) ?n_blocks ?(block_size=4096) ?polling_timeout ?fal
       None
   in
   let run_q = Lf_queue.create () in
-  Lf_queue.push run_q IO;
   let eventfd_mutex = Mutex.create () in
   let sleep_q = Zzz.create () in
   let io_q = Queue.create () in
@@ -1266,7 +1223,7 @@ let rec run ?(queue_depth=64) ?n_blocks ?(block_size=4096) ?polling_timeout ?fal
               enqueue_at_head st k ();
               fork ~new_fiber f
             )
-          | Eio.Private.Effects.Trace -> Some (fun k -> continue k Eio.Private.default_traceln)
+          | Eio.Private.Effects.Trace -> Some (fun k -> continue k Eio_utils.Trace.default_traceln)
           | Eio_unix.Private.Await_readable fd -> Some (fun k ->
               match Fiber_context.get_error fiber with
               | Some e -> discontinue k e

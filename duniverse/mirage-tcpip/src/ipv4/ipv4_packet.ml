@@ -55,6 +55,7 @@ module Marshal = struct
     in
     let options_len = nearest_4 @@ Cstruct.length t.options in
     set_ipv4_hlen_version buf ((4 lsl 4) + 5 + (options_len / 4));
+    set_ipv4_tos buf 0;
     set_ipv4_id buf t.id;
     set_ipv4_off buf t.off;
     set_ipv4_ttl buf t.ttl;
@@ -63,6 +64,7 @@ module Marshal = struct
     set_ipv4_dst buf (Ipaddr.V4.to_int32 t.dst);
     Cstruct.blit t.options 0 buf sizeof_ipv4 (Cstruct.length t.options);
     set_ipv4_len buf (sizeof_ipv4 + options_len + payload_len);
+    set_ipv4_csum buf 0;
     let checksum = Tcpip_checksum.ones_complement @@ Cstruct.sub buf 0 (20 + options_len) in
     set_ipv4_csum buf checksum
 
@@ -79,8 +81,7 @@ module Marshal = struct
       | k -> (4 - k) + n
     in
     let options_len = nearest_4 @@ Cstruct.length t.options in
-    let buf = Cstruct.create (sizeof_ipv4 + options_len) in
-    Cstruct.memset buf 0x00; (* should be removable in the future *)
+    let buf = Cstruct.create_unsafe (sizeof_ipv4 + options_len) in
     unsafe_fill ~payload_len t buf;
     buf
 end

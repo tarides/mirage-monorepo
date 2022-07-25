@@ -1,10 +1,9 @@
 open Common
 
-module Time = Vnetif_common.Time
 module B = Basic_backend.Make
 module V = Vnetif.Make(B)
 module E = Ethernet.Make(V)
-module Static_arp = Static_arp.Make(E)(Time)
+module Static_arp = Static_arp.Make(E)
 module Ip = Static_ipv4.Make(Mirage_random_test)(Mclock)(E)(Static_arp)
 module Udp = Udp.Make(Ip)(Mirage_random_test)
 
@@ -17,16 +16,14 @@ type stack = {
   udp : Udp.t;
 }
 
-let get_stack ?(backend = B.create ~use_async_readers:true
-                  ~yield:(fun() -> Lwt.pause ()) ()) ip =
-  let open Lwt.Infix in
+let get_stack ~sw ~clock ?(backend = B.create ~use_async_readers:sw ()) ip =
   let cidr = Ipaddr.V4.Prefix.make 24 ip in
-  V.connect backend >>= fun netif ->
-  E.connect netif >>= fun ethif ->
-  Static_arp.connect ethif >>= fun arp ->
-  Ip.connect ~cidr ethif arp >>= fun ip ->
-  Udp.connect ip >>= fun udp ->
-  Lwt.return { backend; netif; ethif; arp; ip; udp }
+  let netif = V.connect backend in
+  let ethif = E.connect netif in
+  let arp = Static_arp.connect ~sw ~clock ethif in
+  let ip = Ip.connect ~cidr ethif arp in
+  let udp = Udp.connect ip in
+  { backend; netif; ethif; arp; ip; udp }
 
 let fails msg f args =
   match f args with
@@ -47,15 +44,13 @@ let marshal_unmarshal () =
   match Udp_packet.Unmarshal.of_cstruct with_data with
   | Error s -> Alcotest.fail s
   | Ok (_header, data) ->
-    Alcotest.(check cstruct) "unmarshalling gives expected data" payload data;
-    Lwt.return_unit
+    Alcotest.(check cstruct) "unmarshalling gives expected data" payload data
 
-let write () =
-  let open Lwt.Infix in
+let write ~sw ~env () =
   let dst = Ipaddr.V4.of_string_exn "192.168.4.20" in
-  get_stack dst >>= fun stack ->
+  let stack = get_stack ~sw ~clock:env#clock dst in
   Static_arp.add_entry stack.arp dst (Macaddr.of_string_exn "00:16:3e:ab:cd:ef");
-  Udp.write ~src_port:1212 ~dst_port:21 ~dst stack.udp (Cstruct.of_string "MGET *") >|= Result.get_ok
+  Udp.write ~src_port:1212 ~dst_port:21 ~dst stack.udp (Cstruct.of_string "MGET *")
 
 let unmarshal_regression () =
   let i = Cstruct.create 1016 in
@@ -63,8 +58,7 @@ let unmarshal_regression () =
   Cstruct.set_char i 4 '\x04';
   Cstruct.set_char i 5 '\x00';
   Alcotest.(check (result reject pass)) "correctly return error for bad packet"
-    (Error "parse failed") (Udp_packet.Unmarshal.of_cstruct i);
-  Lwt.return_unit
+    (Error "parse failed") (Udp_packet.Unmarshal.of_cstruct i)
 
 
 let marshal_marshal () =
@@ -80,12 +74,11 @@ let marshal_marshal () =
   Udp_packet.Marshal.into_cstruct ~pseudoheader ~payload udp buffer
   |> Alcotest.(check (result unit string)) "Buffer big enough for header" (Ok ());
   Udp_packet.Unmarshal.of_cstruct (Cstruct.concat [buffer; payload])
-  |> Alcotest.(check (result (pair udp_packet cstruct) string)) "Save and reload" (Ok (udp, payload));
-  Lwt.return_unit
+  |> Alcotest.(check (result (pair udp_packet cstruct) string)) "Save and reload" (Ok (udp, payload))
 
 let suite = [
   "unmarshal regression", `Quick, unmarshal_regression;
   "marshal/marshal", `Quick, marshal_marshal;
   "marshal/unmarshal", `Quick, marshal_unmarshal;
-  "write packets", `Quick, write;
+  "write packets", `Quick, run write;
 ]

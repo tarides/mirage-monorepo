@@ -16,12 +16,6 @@
 
 module Make (Ip : Tcpip.Ip.S) : sig
 
-  type error = Tcpip.Ip.error
-  (** The type for TCP wire errors. *)
-
-  val pp_error: error Fmt.t
-  (** [pp_error] is the pretty-printer for TCP wire {!error}s. *)
-
   type t
   (** The type for TCP wire values. *)
 
@@ -48,7 +42,7 @@ module Make (Ip : Tcpip.Ip.S) : sig
     ?rst:bool -> ?syn:bool -> ?fin:bool -> ?psh:bool ->
     rx_ack:Sequence.t option -> seq:Sequence.t -> window:int ->
     options:Options.t list ->
-    Cstruct.t -> (unit, error) result Lwt.t
+    Cstruct.t -> unit
   (** [xmit] emits a TCP packet over the network. *)
 
 end

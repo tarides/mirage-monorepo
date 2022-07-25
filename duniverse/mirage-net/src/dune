@@ -1,4 +1,4 @@
 (library
  (name mirage_net)
  (public_name mirage-net)
- (libraries fmt cstruct macaddr lwt))
+ (libraries fmt cstruct macaddr eio))

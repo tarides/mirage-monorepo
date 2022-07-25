@@ -3,13 +3,10 @@ open Common
 let src = Logs.Src.create "test_icmpv4" ~doc:"ICMP tests"
 module Log = (val Logs.src_log src : Logs.LOG)
 
-module Time = Vnetif_common.Time
 module B = Basic_backend.Make
 module V = Vnetif.Make(B)
 module E = Ethernet.Make(V)
-module Static_arp = Static_arp.Make(E)(Time)
-
-open Lwt.Infix
+module Static_arp = Static_arp.Make(E)
 
 type decomposed = {
   ipv4_payload : Cstruct.t;
@@ -45,47 +42,45 @@ let speaker_address = Ipaddr.V4.of_string_exn "192.168.222.10"
 
 let header_size = Ethernet.Packet.sizeof_ethernet
 
-let get_stack ?(backend = B.create ~use_async_readers:true
-                  ~yield:(fun() -> Lwt.pause ()) ())
-                  ip =
+let get_stack ~sw ~clock ?(backend = B.create ~use_async_readers:sw ()) ip =
   let cidr = Ipaddr.V4.Prefix.make 24 ip in
-  V.connect backend >>= fun netif ->
-  E.connect netif >>= fun ethif ->
-  Static_arp.connect ethif >>= fun arp ->
-  Ip.connect ~cidr ethif arp >>= fun ip ->
-  Icmp.connect ip >>= fun icmp ->
-  Udp.connect ip >>= fun udp ->
-  Lwt.return { backend; netif; ethif; arp; ip; icmp; udp }
+  let netif = V.connect backend in
+  let ethif = E.connect netif in
+  let arp = Static_arp.connect ~sw ~clock ethif in
+  let ip = Ip.connect ~cidr ethif arp in
+  let icmp = Icmp.connect ip in
+  let udp = Udp.connect ip in
+  { backend; netif; ethif; arp; ip; icmp; udp }
 
 let icmp_listen stack fn =
-  let noop = fun ~src:_ ~dst:_ _buf -> Lwt.return_unit in
+  let noop = fun ~src:_ ~dst:_ _buf -> () in
   V.listen stack.netif ~header_size (* some buffer -> (unit, error) result io *)
     ( E.input stack.ethif ~arpv4:(Static_arp.input stack.arp)
-        ~ipv6:(fun _ -> Lwt.return_unit)
+        ~ipv6:ignore
         ~ipv4:
           ( Ip.input stack.ip
               ~tcp:noop ~udp:noop
-              ~default:(fun ~proto -> match proto with | 1 -> fn | _ -> noop))) >|= fun _ -> ()
+              ~default:(fun ~proto -> match proto with | 1 -> fn | _ -> noop))) |> ignore
 
 
 let inform_arp stack = Static_arp.add_entry stack.arp
 let mac_of_stack stack = E.mac stack.ethif
 
-let short_read () =
+let short_read ~sw:_ ~env:_ () =
   let too_short = Cstruct.create 4 in
   match Icmpv4_packet.Unmarshal.of_cstruct too_short with
   | Ok (icmp, _) ->
     Alcotest.fail (Format.asprintf "processed something too short to be real: %a produced %a"
 		     Cstruct.hexdump_pp too_short Icmpv4_packet.pp icmp)
-  | Error str -> Printf.printf "short packet rejected successfully! msg: %s\n" str;
-    Lwt.return_unit
+  | Error str -> Printf.printf "short packet rejected successfully! msg: %s\n" str
 
-let echo_request () =
+let echo_request ~sw ~env () =
+  let clock = env#clock in
   let seq_no = 0x01 in
   let id_no = 0x1234 in
   let request_payload = Cstruct.of_string "plz reply i'm so lonely" in
-  get_stack speaker_address >>= fun speaker ->
-  get_stack ~backend:speaker.backend listener_address >>= fun listener ->
+  let speaker = get_stack ~sw ~clock speaker_address in
+  let listener = get_stack ~sw ~clock ~backend:speaker.backend listener_address in
   inform_arp speaker listener_address (mac_of_stack listener);
   inform_arp listener speaker_address (mac_of_stack speaker);
   let req = Icmpv4_packet.({code = 0x00; ty = Icmpv4_wire.Echo_request;
@@ -107,23 +102,21 @@ let echo_request () =
       Alcotest.(check int) "icmp echo-reply code" 0x00 reply.code; (* should be code 0 *)
       Alcotest.(check int) "icmp echo-reply id" id_no id;
       Alcotest.(check int) "icmp echo-reply seq" seq_no seq;
-      Alcotest.(check cstruct) "icmp echo-reply payload" payload request_payload;
-      Lwt.return_unit
+      Alcotest.(check cstruct) "icmp echo-reply payload" payload request_payload
   in
-  Lwt.async (fun () -> Lwt.pick [
-    icmp_listen listener (fun ~src ~dst buf ->
+  Eio.Fiber.fork ~sw (fun () -> Eio.Fiber.all [
+    (fun () -> icmp_listen listener (fun ~src ~dst buf ->
         Logs.debug (fun f -> f "listener's ICMP listener invoked");
-        Icmp.input listener.icmp ~src ~dst buf);
-    icmp_listen speaker (fun ~src:_ ~dst:_ -> check)
+        Icmp.input listener.icmp ~src ~dst buf));
+    (fun () -> icmp_listen speaker (fun ~src:_ ~dst:_ -> check))
   ]);
-  Icmp.write speaker.icmp ~dst:listener_address echo_request >>= function
-  | Error e -> Alcotest.failf "ICMP echo request write: %a" Icmp.pp_error e
-  | Ok () -> Lwt.return_unit
+  Icmp.write speaker.icmp ~dst:listener_address echo_request
 
-let echo_silent () =
+let echo_silent ~sw  ~env () =
+  let clock = env#clock in
   let open Icmpv4_packet in
-  get_stack speaker_address >>= fun speaker ->
-  get_stack ~backend:speaker.backend listener_address >>= fun listener ->
+  let speaker = get_stack ~sw ~clock speaker_address in
+  let listener = get_stack ~sw ~clock ~backend:speaker.backend listener_address in
   let req = ({code = 0x00; ty = Icmpv4_wire.Echo_request;
 	      subheader = Id_and_seq (0xff, 0x4341)}) in
   let echo_request = Marshal.make_cstruct req ~payload:Cstruct.(create 0) in
@@ -134,24 +127,22 @@ let echo_silent () =
       Alcotest.fail "received an ICMP echo reply even though we shouldn't have"
     | msg_ty ->
       Printf.printf "received an unexpected ICMP message (type %s); ignoring it"
-      (Icmpv4_wire.ty_to_string msg_ty);
-      Lwt.return_unit
+      (Icmpv4_wire.ty_to_string msg_ty)
   in
   let nobody_home = Ipaddr.V4.of_string_exn "192.168.222.90" in
   inform_arp speaker listener_address (mac_of_stack listener);
   inform_arp listener speaker_address (mac_of_stack speaker);
   (* set up an ARP mapping so the listener is more likely to see the echo-request *)
   inform_arp speaker nobody_home (mac_of_stack listener);
-  Lwt.async (fun () ->
-  Lwt.pick [
-    icmp_listen listener (fun ~src ~dst buf -> Icmp.input listener.icmp ~src ~dst buf);
-    icmp_listen speaker (fun ~src:_ ~dst:_ -> check);
+  Eio.Fiber.fork ~sw (fun () ->
+  Eio.Fiber.all [
+    (fun () -> icmp_listen listener (fun ~src ~dst buf -> Icmp.input listener.icmp ~src ~dst buf));
+    (fun () -> icmp_listen speaker (fun ~src:_ ~dst:_ -> check));
   ]);
-  Icmp.write speaker.icmp ~dst:nobody_home echo_request >>= function
-  | Error e -> Alcotest.failf "ICMP echo request write: %a" Icmp.pp_error e
-  | Ok () -> Lwt.return_unit
+  Icmp.write speaker.icmp ~dst:nobody_home echo_request
 
-let write_errors () =
+let write_errors ~sw ~env () =
+  let clock = env#clock in
   let decompose buf =
     let open Ethernet.Packet in
     let* ethernet_header, ethernet_payload = of_cstruct buf in
@@ -178,11 +169,11 @@ let write_errors () =
             ~payload:decomposed.ethernet_payload in
         let header_and_payload = Cstruct.concat ([header ; decomposed.ethernet_payload]) in
         let open Ipv4_packet in
-        Icmp.write stack.icmp ~dst:decomposed.ipv4_header.src header_and_payload >|= Result.get_ok
+        Icmp.write stack.icmp ~dst:decomposed.ipv4_header.src header_and_payload
     in
-    V.listen stack.netif ~header_size reject >|= fun _ -> ()
+    V.listen stack.netif ~header_size reject |> ignore
   in
-  let check_packet buf : unit Lwt.t =
+  let check_packet buf : unit =
     let aux buf =
       let open Icmpv4_packet in
       let* icmp, icmp_payload = Unmarshal.of_cstruct buf in
@@ -197,32 +188,33 @@ let write_errors () =
     in
     match aux buf with
     | Error s -> Alcotest.fail s
-    | Ok () -> Lwt.return_unit
+    | Ok () -> ()
   in
   let check_rejection stack dst =
     let payload = Cstruct.of_string "!@#$" in
-    Lwt.pick [
-      icmp_listen stack (fun ~src:_ ~dst:_ buf -> check_packet buf >>= fun () ->
-                          V.disconnect stack.netif);
-      Time.sleep_ns (Duration.of_ms 500) >>= fun () ->
-      Udp.write stack.udp ~dst ~src_port:1212 ~dst_port:123 payload
-        >|= Result.get_ok >>= fun () ->
-        Time.sleep_ns (Duration.of_sec 1) >>= fun () ->
-      Alcotest.fail "writing thread completed first";
+    Eio.Fiber.any [
+      (fun () -> icmp_listen stack (fun ~src:_ ~dst:_ buf -> 
+        check_packet buf;
+        V.disconnect stack.netif));
+      (fun () -> 
+        Eio.Time.sleep clock 0.5;
+        Udp.write stack.udp ~dst ~src_port:1212 ~dst_port:123 payload;
+        Eio.Time.sleep clock 1.;
+        Alcotest.fail "writing thread completed first");
     ]
   in
-  get_stack speaker_address >>= fun speaker ->
-  get_stack ~backend:speaker.backend listener_address >>= fun listener ->
+  let speaker = get_stack ~sw ~clock speaker_address in
+  let listener = get_stack ~sw ~clock ~backend:speaker.backend listener_address in
   inform_arp speaker listener_address (mac_of_stack listener);
   inform_arp listener speaker_address (mac_of_stack speaker);
-  Lwt.pick [
-    reject_all listener;
-    check_rejection speaker listener_address;
+  Eio.Fiber.any [
+    (fun () -> reject_all listener);
+    (fun () -> check_rejection speaker listener_address);
   ]
 
 let suite = [
-  "short read", `Quick, short_read;
-  "echo requests elicit an echo reply", `Quick, echo_request;
-  "echo requests for other ips don't elicit an echo reply", `Quick, echo_silent;
-  "error messages are written", `Quick, write_errors;
+  "short read", `Quick, run short_read;
+  "echo requests elicit an echo reply", `Quick, run echo_request;
+  "echo requests for other ips don't elicit an echo reply", `Quick, run echo_silent;
+  "error messages are written", `Quick, run write_errors;
 ]

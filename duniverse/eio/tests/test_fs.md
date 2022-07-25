@@ -31,11 +31,6 @@ let try_mkdir dir path =
   | () -> traceln "mkdir %S -> ok" path
   | exception ex -> traceln "mkdir %S -> %a" path Fmt.exn ex
 
-let try_read_dir dir path =
-  match Eio.Dir.read_dir dir path with
-  | names -> traceln "read_dir %S -> %a" path Fmt.Dump.(list string) names
-  | exception ex -> traceln "read_dir %S -> %a" path Fmt.exn ex
-
 let chdir path =
   traceln "chdir %S" path;
   Unix.chdir path
@@ -223,27 +218,6 @@ Using `cwd` we can't access the parent, but using `fs` we can:
 +mkdir "../outside-cwd" -> ok
 +write "../test-file" -> ok
 +chdir ".."
-- : unit = ()
-```
-
-Reading directory entries under `cwd` and outside of `cwd`.
-
-```ocaml
-# run @@ fun env ->
-  let cwd = Eio.Stdenv.cwd env in
-  try_mkdir cwd "readdir";
-  Eio.Dir.with_open_dir cwd "readdir" @@ fun tmpdir ->
-  try_mkdir tmpdir "test-1";
-  try_mkdir tmpdir "test-2";
-  try_read_dir tmpdir ".";
-  try_read_dir tmpdir "..";
-  try_read_dir tmpdir "test-3";;
-+mkdir "readdir" -> ok
-+mkdir "test-1" -> ok
-+mkdir "test-2" -> ok
-+read_dir "." -> ["test-1"; "test-2"]
-+read_dir ".." -> Eio.Dir.Permission_denied ("..", _)
-+read_dir "test-3" -> Eio.Dir.Not_found ("test-3", _)
 - : unit = ()
 ```
 

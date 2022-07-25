@@ -1,12 +1,28 @@
-include Eio__core
+module Cancel = Cancel
+
+module Private = struct
+  module Fiber_context = Cancel.Fiber_context
+
+  module Effects = struct
+    type 'a enqueue = 'a Suspend.enqueue
+    type _ Effect.t += 
+      | Suspend = Suspend.Suspend
+      | Fork = Fiber.Fork
+      | Get_context = Cancel.Get_context
+      | Trace : (?__POS__:(string * int * int * int) -> ('a, Format.formatter, unit, unit) format4 -> 'a) Effect.t
+  end
+
+  module Effect = Effect
+  module Ctf = Ctf
+end
 
 let traceln ?__POS__ fmt =
-  try
-    Effect.perform Private.Effects.Trace ?__POS__ fmt
-  with Unhandled ->
-    Private.default_traceln ?__POS__ fmt
+  Effect.perform Private.Effects.Trace ?__POS__ fmt
 
+module Promise = Promise
+module Fiber = Fiber
 module Fibre = Fiber
+module Switch = Switch
 
 module Std = struct
   module Promise = Promise
@@ -18,12 +34,12 @@ end
 
 module Semaphore = Semaphore
 module Mutex = Eio_mutex
+module Condition = Condition
 module Stream = Stream
 module Exn = Exn
 module Generic = Generic
 module Flow = Flow
 module Buf_read = Buf_read
-module Buf_write = Buf_write
 module Net = Net
 module Domain_manager = Domain_manager
 module Time = Time
