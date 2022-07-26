@@ -1,0 +1,4 @@
+.*.swp
+*.install
+.merlin
+_build
