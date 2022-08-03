@@ -6,9 +6,13 @@ homepage: "https://github.com/patricoferris/ocaml-multicore-monorepo"
 bug-reports: "https://github.com/patricoferris/ocaml-multicore-monorepo/issues"
 depends: [
   "ocaml" {= "5.0.0" }
-  "dune" {>= "2.9.2"}
+  "dune" {= "3.3.1"}
+  "dune-configurator" {= "3.3.1"}
+  "eio_main" {= "0.2"}
+  "mirage-net-unix"
+  "mirage-random-test"
+  "base" {= "v0.15.1~5.0preview"}
   "cohttp-eio"
-  "eio_main"
   "tcpip"
   "httpaf"
 ]
@@ -28,15 +32,15 @@ build: [
 ]
 dev-repo: "git+https://github.com/patricoferris/ocaml-multicore-monorepo.git"
 pin-depends: [
-  "cohttp.dev" "git+https://github.com/mirage/ocaml-cohttp.git"
-  "cohttp-eio.dev" "git+https://github.com/mirage/ocaml-cohttp.git"
-  "http.dev" "git+https://github.com/mirage/ocaml-cohttp.git"
-  "arp.dev" "git+https://github.com/TheLortex/arp.git#e721843ed9b9e1c34480db222c721b3f4d40a7da"
-  "ethernet.dev" "git+https://github.com/TheLortex/ethernet.git#7c19ae12b1cce1f00fbceb9b2b7bc413cf9f9b8e"
-  "mirage-net.dev" "git+https://github.com/TheLortex/mirage-net.git#55899a4089faa8f9677095d97bf35727a341082e"
-  "mirage-net-unix.dev" "git+https://github.com/TheLortex/mirage-net-unix.git#0c0f5d7e6dcdf8a348d31c5aeaff274ae86a39ba"
-  "tcpip.dev" "git+https://github.com/TheLortex/mirage-tcpip.git#ffdbc7963cd384d89de31eaecdd8c73c052b8fa7"
-  "mirage-vnetif.dev" "git+https://github.com/TheLortex/mirage-vnetif.git#cfae8a8a2385b5e643a344e047ffb9b3c1376bf5"
-  "httpaf.dev" "git+https://github.com/talex5/httpaf.git#eio"
-  "angstrom.dev" "git+https://github.com/talex5/angstrom#effects"
+  ["cohttp.dev" "git+https://github.com/mirage/ocaml-cohttp.git#c4e7da95a44e072f1e43e6b3605f599c29002ed5"]
+  ["cohttp-eio.dev" "git+https://github.com/mirage/ocaml-cohttp.git#c4e7da95a44e072f1e43e6b3605f599c29002ed5"]
+  ["http.dev" "git+https://github.com/mirage/ocaml-cohttp.git"]
+  ["arp.3.0.0" "git+https://github.com/TheLortex/arp.git#e721843ed9b9e1c34480db222c721b3f4d40a7da"]
+  ["ethernet.dev" "git+https://github.com/TheLortex/ethernet.git#7c19ae12b1cce1f00fbceb9b2b7bc413cf9f9b8e"]
+  ["mirage-net.dev" "git+https://github.com/TheLortex/mirage-net.git#55899a4089faa8f9677095d97bf35727a341082e"]
+  ["mirage-net-unix.dev" "git+https://github.com/TheLortex/mirage-net-unix.git#0c0f5d7e6dcdf8a348d31c5aeaff274ae86a39ba"]
+  ["tcpip.dev" "git+https://github.com/TheLortex/mirage-tcpip.git#ffdbc7963cd384d89de31eaecdd8c73c052b8fa7"]
+  ["mirage-vnetif.dev" "git+https://github.com/TheLortex/mirage-vnetif.git#cfae8a8a2385b5e643a344e047ffb9b3c1376bf5"]
+  ["httpaf.dev" "git+https://github.com/talex5/httpaf.git#eio"]
+  ["angstrom.dev" "git+https://github.com/talex5/angstrom#effects"]
 ]

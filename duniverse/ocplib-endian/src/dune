@@ -72,4 +72,4 @@
  (wrapped false)
  (modules endianBigstring)
  (ocamlopt_flags (:standard -inline 1000))
- (libraries ocplib_endian bigarray-compat bytes))
+ (libraries ocplib_endian bigarray bytes))

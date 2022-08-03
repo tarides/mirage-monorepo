@@ -1,4 +1,4 @@
-open Bigarray_compat
+open Bigarray
 open EndianBigstring
 
 [@@@warning "-52-53"]
