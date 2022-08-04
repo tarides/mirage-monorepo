@@ -1,8 +1,0 @@
-(library
- (name mirage_vnetif)
- (public_name mirage-vnetif)
- (modules basic_backend vnetif)
- (wrapped false)
- (libraries cstruct ipaddr macaddr
-   duration mirage-net logs mirage-profile uring
-   ))

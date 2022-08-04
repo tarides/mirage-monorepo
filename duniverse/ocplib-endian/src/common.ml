@@ -16,7 +16,7 @@ let get_int8 s off =
   [@@ocaml.inline]
 let set_int8 s off v =
   (* It is ok to cast using unsafe_chr because both String.set
-     and Bigarray_compat.Array1.set (on bigstrings) use the 'store unsigned int8'
+     and Bigarray.Array1.set (on bigstrings) use the 'store unsigned int8'
      primitives that effectively extract the bits before writing *)
   set_char s off (Char.unsafe_chr v)
   [@@ocaml.inline]
