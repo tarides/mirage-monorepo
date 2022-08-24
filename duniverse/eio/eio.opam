@@ -10,13 +10,14 @@ doc: "https://ocaml-multicore.github.io/eio/"
 bug-reports: "https://github.com/ocaml-multicore/eio/issues"
 depends: [
   "dune" {>= "2.9"}
-  "ocaml" {>= "4.12.0"}
-  "base-domains"
+  "ocaml" {>= "5.0.0"}
+  "bigstringaf" {>= "0.9.0"}
   "cstruct" {>= "6.0.1"}
   "lwt-dllist"
   "optint" {>= "0.1.0"}
   "psq" {>= "0.2.0"}
   "fmt" {>= "0.8.9"}
+  "hmap" {>= "0.8.1"}
   "astring" {>= "0.8.5" & with-test}
   "crowbar" {>= "0.2" & with-test}
   "mtime" {>= "1.2.0"}

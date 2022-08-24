@@ -1,3 +1,5 @@
+[API reference](https://ocaml-multicore.github.io/eio/)
+
 # Eio -- Effects-Based Parallel IO for OCaml
 
 Eio provides an effects-based direct-style IO stack for OCaml 5.0.
@@ -13,7 +15,9 @@ Eio replaces existing concurrency libraries such as Lwt
 * [Motivation](#motivation)
 * [Current Status](#current-status)
 * [Structure of the Code](#structure-of-the-code)
-* [Getting Started](#getting-started)
+* [Getting OCaml 5.0](#getting-ocaml-50)
+* [Getting Eio](#getting-eio)
+* [Running Eio](#running-eio)
 * [Testing with Mocks](#testing-with-mocks)
 * [Fibers](#fibers)
 * [Tracing](#tracing)
@@ -24,7 +28,8 @@ Eio replaces existing concurrency libraries such as Lwt
 * [Performance](#performance)
 * [Networking](#networking)
 * [Design Note: Capabilities](#design-note-capabilities)
-* [Buffering and Parsing](#buffering-and-parsing)
+* [Buffered Reading and Parsing](#buffered-reading-and-parsing)
+* [Buffered Writing](#buffered-writing)
 * [Filesystem Access](#filesystem-access)
 * [Time](#time)
 * [Multicore Support](#multicore-support)
@@ -33,10 +38,14 @@ Eio replaces existing concurrency libraries such as Lwt
   * [Example: Concurrent Cache](#example-concurrent-cache)
   * [Streams](#streams)
   * [Example: Worker Pool](#example-worker-pool)
+  * [The Rest: Mutex, Semaphore and Condition](#the-rest-mutex-semaphore-and-condition)
 * [Design Note: Determinism](#design-note-determinism)
 * [Provider Interfaces](#provider-interfaces)
 * [Example Applications](#example-applications)
-* [Porting from Lwt](#porting-from-lwt)
+* [Integrations](#integrations)
+  * [Async](#async)
+  * [Lwt](#lwt)
+  * [Unix and System Threads](#unix-and-system-threads)
 * [Further Reading](#further-reading)
 
 <!-- vim-markdown-toc -->
@@ -65,13 +74,6 @@ and we hope that Eio will be that API.
 
 ## Current Status
 
-Eio can be used with OCaml 5.00.0+trunk or with 4.12.0+domains.
-
-Eio is able to run a web-server with [good performance][http-bench],
-but you are likely to encounter missing features while using it.
-If you'd like to help out, please try porting your program to use Eio and submit PRs or open issues when you find problems.
-Remember that you can always fall back to using Lwt libraries to provide missing features if necessary.
-
 Platform support:
 
 - Unix and macos: should be fully working using the libuv backend.
@@ -84,11 +86,14 @@ Feature status:
 
 - Concurrency primitives: Fibers, cancellation, promises, streams and semaphores are all working.
 - Multicore support: Working.
-- Networking: Clients and servers using TCP and Unix domain sockets work. UDP not yet done.
+- Networking: Clients and servers using TCP, UDP and Unix domain sockets work.
 - File-systems: Can create files and directories, load, save, parse, etc. Most other operations missing.
 - Spawning sub-processes: Not implemented yet.
 
 See [Awesome Multicore OCaml][] for links to work migrating other projects to Eio.
+
+If you'd like to help out, please try porting your program to use Eio and submit PRs or open issues when you find problems.
+Remember that you can always fall back to using Lwt libraries to provide missing features if necessary.
 
 ## Structure of the Code
 
@@ -98,26 +103,39 @@ See [Awesome Multicore OCaml][] for links to work migrating other projects to Ei
   plus a low-level API that can be used directly (in non-portable code).
 - [Eio_main][] selects an appropriate backend (e.g. `eio_linux` or `eio_luv`), depending on your platform.
 
-## Getting Started
+## Getting OCaml 5.0
 
-You'll need a version of the OCaml compiler with effects.
-`5.00.0+trunk` often works but is a moving target, so we suggest using `4.12.0+domains` for now.
-You can get it like this:
+You'll need OCaml 5.0.0~alpha0 or later.
+You can either install it yourself or build the included [Dockerfile](./Dockerfile).
 
-```
-opam switch create 4.12.0+domains --repositories=multicore=git+https://github.com/ocaml-multicore/multicore-opam.git,default
-```
+To install it yourself:
 
-Then you'll need to install this library (and `utop` if you want to try it interactively):
+1. Make sure you have opam 2.1 or later (run `opam --version` to check).
+
+2. Use opam to install OCaml 5.0.0~alpha0 or later:
+
+   ```
+   opam switch create 5.0.0~alpha0 --repo=default,alpha=git+https://github.com/kit-ty-kate/opam-alpha-repository.git
+   ```
+
+## Getting Eio
+
+If you want to run the latest development version from Git, run these commands
+(otherwise, skip them and you'll get the latest release from opam):
 
 ```
 git clone https://github.com/ocaml-multicore/eio.git
 cd eio
 opam pin -yn .
-opam depext -i eio_main utop		# (for opam 2.0)
-opam install eio_main utop		# (for opam 2.1)
 ```
-(Run `opam --version` if you're not sure which one you have installed.)
+
+Either way, install `eio_main` (and `utop` if you want to try it interactively):
+
+```
+opam install eio_main utop
+```
+
+## Running Eio
 
 Try out the examples interactively by running `utop` in the shell.
 
@@ -172,6 +190,17 @@ For example, instead of giving `main` the real standard output, we can have it w
 
 [Eio.traceln][] provides convenient printf-style debugging, without requiring you to plumb `stderr` through your code.
 It uses the `Format` module, so you can use the extended formatting directives here too.
+
+The [Eio_mock][] library provides some convenient pre-built mocks:
+
+```ocaml
+# #require "eio.mock";;
+# Eio_main.run @@ fun _env ->
+  let mock_stdout = Eio_mock.Flow.make "mock-stdout" in
+  main ~stdout:mock_stdout;;
++mock-stdout: wrote "Hello, world!\n"
+- : unit = ()
+```
 
 ## Fibers
 
@@ -405,7 +434,7 @@ Note that not all cases are well-optimised yet, but the idea is for each backend
 
 ## Networking
 
-Eio provides a simple high-level API for [networking][Eio.Net].
+Eio provides an API for [networking][Eio.Net].
 Here is a client that connects to address `addr` using network `net` and sends a message:
 
 ```ocaml
@@ -418,12 +447,27 @@ let run_client ~net ~addr =
 
 Note: the `flow` is attached to `sw` and will be closed automatically when it finishes.
 
+We can test it using a mock network:
+
+```ocaml
+# Eio_main.run @@ fun _env ->
+  let net = Eio_mock.Net.make "mocknet" in
+  let socket = Eio_mock.Flow.make "socket" in
+  Eio_mock.Net.on_connect net [`Return socket];
+  run_client ~net ~addr:(`Tcp (Eio.Net.Ipaddr.V4.loopback, 8080));; 
++Connecting to server...
++mocknet: connect to tcp:127.0.0.1:8080
++socket: wrote "Hello from client"
++socket: closed
+- : unit = ()
+```
+
 Here is a server that listens on `socket` and handles a single connection by reading a message:
 
 ```ocaml
 let run_server socket =
   Switch.run @@ fun sw ->
-  Eio.Net.accept_sub socket ~sw (fun ~sw flow _addr ->
+  Eio.Net.accept_fork socket ~sw (fun flow _addr ->
     traceln "Server accepted connection from client";
     let b = Buffer.create 100 in
     Eio.Flow.copy flow (Eio.Flow.buffer_sink b);
@@ -434,11 +478,35 @@ let run_server socket =
 
 Notes:
 
-- `accept_sub` handles the connection in a new fiber, with its own subswitch.
-- Normally, a server would call `accept_sub` in a loop to handle multiple connections.
-- When the child switch created by `accept_sub` finishes, `flow` is closed automatically.
+- `accept_fork` handles the connection in a new fiber.
+- Normally, a server would call `accept_fork` in a loop to handle multiple connections.
+- When the handler passed to `accept_fork` finishes, `flow` is closed automatically.
 
-We can test them in a single process using `Fiber.both`:
+This can also be tested on its own using a mock network:
+
+```ocaml
+# Eio_main.run @@ fun _env ->
+  let listening_socket = Eio_mock.Net.listening_socket "tcp/80" in
+  let mock_addr = `Tcp (Eio.Net.Ipaddr.V4.loopback, 37568) in
+  let connection = Eio_mock.Flow.make "connection" in
+  Eio_mock.Net.on_accept listening_socket [`Return (connection, mock_addr)];
+  Eio_mock.Flow.on_read connection [
+    `Return "(packet 1)";
+    `Yield_then (`Return "(packet 2)");
+    `Raise End_of_file;
+  ];
+  run_server listening_socket;;
++tcp/80: accepted connection from tcp:127.0.0.1:37568
++Server accepted connection from client
++connection: read "(packet 1)"
++(normally we'd loop and accept more connections here)
++connection: read "(packet 2)"
++Server received: "(packet 1)(packet 2)"
++connection: closed
+- : unit = ()
+```
+
+We can now run them together using the real network (in a single process) using `Fiber.both`:
 
 ```ocaml
 let main ~net ~addr =
@@ -517,7 +585,7 @@ However, it still makes non-malicious code easier to understand and test
 and may allow for an extension to the language in the future.
 See [Emily][] for a previous attempt at this.
 
-## Buffering and Parsing
+## Buffered Reading and Parsing
 
 Reading from an Eio flow directly may give you more or less data than you wanted.
 For example, if you want to read a line of text from a TCP stream,
@@ -595,32 +663,90 @@ let message =
 - : unit = ()
 ```
 
-## Filesystem Access
+## Buffered Writing
 
-Access to the [filesystem][Eio.Dir] is controlled by capabilities, and `env` provides two:
-
-- `fs` provides full access (just like OCaml's stdlib).
-- `cwd` restricts access to files beneath the current working directory.
-
-You can save a whole file using `Dir.save`:
+For performance, it's often useful to batch up writes and send them all in one go.
+For example, consider sending an HTTP response without buffering:
 
 ```ocaml
-# Eio_main.run @@ fun env ->
-  let dir = Eio.Stdenv.cwd env in
-  Eio.Dir.save ~create:(`Exclusive 0o600) dir "test.txt" "line one\nline two\n";;
+let send_response socket =
+  Eio.Flow.copy_string "200 OK\r\n" socket;
+  Eio.Flow.copy_string "\r\n" socket;
+  Fiber.yield ();       (* Simulate waiting for the body *)
+  Eio.Flow.copy_string "Body data" socket
+```
+
+```ocaml
+# Eio_main.run @@ fun _ ->
+  send_response (Eio_mock.Flow.make "socket");;
++socket: wrote "200 OK\r\n"
++socket: wrote "\r\n"
++socket: wrote "Body data"
 - : unit = ()
 ```
 
-For more control, use `Dir.open_out` (or `with_open_out`) to get a flow.
+The socket received three writes, perhaps sending three separate packets over the network.
+We can wrap a flow with [Eio.Buf_write][] to avoid this:
+
+```ocaml
+module Write = Eio.Buf_write
+
+let send_response socket =
+  Write.with_flow socket @@ fun w ->
+  Write.string w "200 OK\r\n";
+  Write.string w "\r\n";
+  Fiber.yield ();       (* Simulate waiting for the body *)
+  Write.string w "Body data"
+```
+
+```ocaml
+# Eio_main.run @@ fun _ ->
+  send_response (Eio_mock.Flow.make "socket");;
++socket: wrote "200 OK\r\n"
++              "\r\n"
++socket: wrote "Body data"
+- : unit = ()
+```
+
+Now the first two writes were combined and sent together.
+
+
+## Filesystem Access
+
+Access to the filesystem is performed using [Eio.Path][].
+An `'a Path.t` is a pair of a capability to a base directory (of type `'a`) and a string path relative to that.
+To append to the string part, it's convenient to use the `/` operator:
+
+```ocaml
+let ( / ) = Eio.Path.( / )
+```
+
+`env` provides two initial paths:
+
+- `cwd` restricts access to files beneath the current working directory.
+- `fs` provides full access (just like OCaml's stdlib).
+
+You can save a whole file using `Path.save`:
+
+```ocaml
+# Eio_main.run @@ fun env ->
+  let path = Eio.Stdenv.cwd env / "test.txt" in
+  traceln "Saving to %a" Eio.Path.pp path;
+  Eio.Path.save ~create:(`Exclusive 0o600) path "line one\nline two\n";;
++Saving to <cwd:test.txt>
+- : unit = ()
+```
+
+For more control, use `Path.open_out` (or `with_open_out`) to get a flow.
 
 To load a file, you can use `load` to read the whole thing into a string,
-`Dir.open_in` (or `with_open_in`) to get a flow, or `Dir.with_lines` to stream
+`Path.open_in` (or `with_open_in`) to get a flow, or `Path.with_lines` to stream
 the lines (a convenience function that uses `Buf_read.lines`):
 
 ```ocaml
 # Eio_main.run @@ fun env ->
-  let dir = Eio.Stdenv.cwd env in
-  Eio.Dir.with_lines dir "test.txt" (fun lines ->
+  let path = Eio.Stdenv.cwd env / "test.txt" in
+  Eio.Path.with_lines path (fun lines ->
      Seq.iter (traceln "Processing %S") lines
   );;
 +Processing "line one"
@@ -631,26 +757,26 @@ the lines (a convenience function that uses `Buf_read.lines`):
 Access to `cwd` only grants access to that sub-tree:
 
 ```ocaml
-let try_save dir path data =
-  match Eio.Dir.save ~create:(`Exclusive 0o600) dir path data with
-  | () -> traceln "save %S -> ok" path
-  | exception ex -> traceln "save %S -> %a" path Fmt.exn ex
+let try_save path data =
+  match Eio.Path.save ~create:(`Exclusive 0o600) path data with
+  | () -> traceln "save %a -> ok" Eio.Path.pp path
+  | exception ex -> traceln "save %a -> %a" Eio.Path.pp path Fmt.exn ex
 
-let try_mkdir dir path =
-  match Eio.Dir.mkdir dir path ~perm:0o700 with
-  | () -> traceln "mkdir %S -> ok" path
-  | exception ex -> traceln "mkdir %S -> %a" path Fmt.exn ex
+let try_mkdir path =
+  match Eio.Path.mkdir path ~perm:0o700 with
+  | () -> traceln "mkdir %a -> ok" Eio.Path.pp path
+  | exception ex -> traceln "mkdir %a -> %a" Eio.Path.pp path Fmt.exn ex
 ```
 
 ```ocaml
 # Eio_main.run @@ fun env ->
   let cwd = Eio.Stdenv.cwd env in
-  try_mkdir cwd "dir1";
-  try_mkdir cwd "../dir2";
-  try_mkdir cwd "/tmp/dir3";;
-+mkdir "dir1" -> ok
-+mkdir "../dir2" -> Eio__Dir.Permission_denied("../dir2", _)
-+mkdir "/tmp/dir3" -> Eio__Dir.Permission_denied("/tmp/dir3", _)
+  try_mkdir (cwd / "dir1");
+  try_mkdir (cwd / "../dir2");
+  try_mkdir (cwd / "/tmp/dir3");;
++mkdir <cwd:dir1> -> ok
++mkdir <cwd:../dir2> -> Eio__Fs.Permission_denied("../dir2", _)
++mkdir <cwd:/tmp/dir3> -> Eio__Fs.Permission_denied("/tmp/dir3", _)
 - : unit = ()
 ```
 
@@ -662,12 +788,12 @@ The checks also apply to following symlinks:
 
 # Eio_main.run @@ fun env ->
   let cwd = Eio.Stdenv.cwd env in
-  try_save cwd "dir1/file1" "A";
-  try_save cwd "link-to-dir1/file2" "B";
-  try_save cwd "link-to-tmp/file3" "C";;
-+save "dir1/file1" -> ok
-+save "link-to-dir1/file2" -> ok
-+save "link-to-tmp/file3" -> Eio__Dir.Permission_denied("link-to-tmp/file3", _)
+  try_save (cwd / "dir1/file1") "A";
+  try_save (cwd / "link-to-dir1/file2") "B";
+  try_save (cwd / "link-to-tmp/file3") "C";;
++save <cwd:dir1/file1> -> ok
++save <cwd:link-to-dir1/file2> -> ok
++save <cwd:link-to-tmp/file3> -> Eio__Fs.Permission_denied("link-to-tmp/file3", _)
 - : unit = ()
 ```
 
@@ -676,16 +802,16 @@ You can use `open_dir` (or `with_open_dir`) to create a restricted capability to
 ```ocaml
 # Eio_main.run @@ fun env ->
   let cwd = Eio.Stdenv.cwd env in
-  Eio.Dir.with_open_dir cwd "dir1" @@ fun dir1 ->
-  try_save dir1 "file4" "D";
-  try_save dir1 "../file5" "E";;
-+save "file4" -> ok
-+save "../file5" -> Eio__Dir.Permission_denied("../file5", _)
+  Eio.Path.with_open_dir (cwd / "dir1") @@ fun dir1 ->
+  try_save (dir1 / "file4") "D";
+  try_save (dir1 / "../file5") "E";;
++save <dir1:file4> -> ok
++save <dir1:../file5> -> Eio__Fs.Permission_denied("../file5", _)
 - : unit = ()
 ```
 
 You only need to use `open_dir` if you want to create a new sandboxed environment.
-You can use a single directory object to access all paths beneath it,
+You can use a single base directory object to access all paths beneath it,
 and this allows following symlinks within that subtree.
 
 A program that operates on the current directory will probably want to use `cwd`,
@@ -1016,6 +1142,82 @@ The `Fiber.check ()` checks whether the worker itself has been cancelled, and ex
 It's not actually necessary in this case,
 because if we continue instead then the following `Stream.take` will perform the check anyway.
 
+### The Rest: Mutex, Semaphore and Condition
+
+Eio also provides `Mutex`, `Semaphore` and `Condition` sub-modules.
+Each of these corresponds to the module with the same name in the OCaml standard library,
+but allows other fibers to run while waiting instead of blocking the whole domain.
+They are all safe to use in parallel from multiple domains.
+
+- [Eio.Mutex][] provides *mutual exclusion*, so that only one fiber can access a resource at a time.
+- [Eio.Semaphore][] generalises this to allow up to *n* fibers to access a resource at once.
+- [Eio.Condition][] allows a fiber to wait until some condition is true.
+
+For example, if we allow loading and saving data in a file there could be a problem
+if we try to load the data while a save is in progress.
+Protecting the file with a mutex will prevent that:
+
+```ocaml
+module Atomic_file = struct
+  type 'a t = {
+    path : 'a Eio.Path.t;
+    mutex : Eio.Mutex.t;
+  }
+
+  let of_path path =
+    { path; mutex = Eio.Mutex.create () }
+
+  let save t data =
+    Eio.Mutex.use_rw t.mutex ~protect:true (fun () ->
+       Eio.Path.save t.path data ~create:(`Or_truncate 0o644)
+    )
+
+  let load t =
+    Eio.Mutex.use_ro t.mutex (fun () ->
+       Eio.Path.load t.path
+    )
+end
+```
+
+The `~protect:true` in `save` makes the critical section non-cancellable,
+so that if a cancel happens during a save then we will finish writing the data first.
+It can be used like this:
+
+```ocaml
+# Eio_main.run @@ fun env ->
+  let dir = Eio.Stdenv.cwd env in
+  let t = Atomic_file.of_path (dir / "data") in
+  Fiber.both
+    (fun () -> Atomic_file.save t "some data")
+    (fun () ->
+      let data = Atomic_file.load t in
+      traceln "Loaded: %S" data
+    );;
++Loaded: "some data"
+- : unit = ()
+```
+
+Note: In practice, a better way to make file writes atomic is
+to write the data to a temporary file and then atomically rename it over the old data.
+That will work even if the whole computer crashes, and does not delay cancellation.
+
+If the operation being performed is very fast (such as updating some in-memory counters),
+then it is fine to use the standard library's `Mutex` instead.
+
+If the operation does not switch fibers *and* the resource is only accessed from one domain,
+then no mutex is needed at all. For example:
+
+```ocaml
+(* No mutex needed if only used from a single domain: *)
+
+let in_use = ref 10
+let free = ref 0
+
+let release () =
+  incr free;
+  decr in_use
+```
+
 ## Design Note: Determinism
 
 Within a domain, fibers are scheduled deterministically.
@@ -1033,7 +1235,7 @@ This means that adding `traceln` to deterministic code will not affect its sched
 
 In particular, if you test your code by providing (deterministic) mocks then the tests will be deterministic.
 An easy way to write tests is by having the mocks call `traceln` and then comparing the trace output with the expected output.
-See Eio's own tests for examples, e.g., [tests/test_switch.md](tests/test_switch.md).
+See Eio's own tests for examples, e.g., [tests/switch.md](tests/switch.md).
 
 ## Provider Interfaces
 
@@ -1097,17 +1299,31 @@ See [Dynamic Dispatch](doc/rationale.md#dynamic-dispatch) for more discussion ab
 - [ocaml-multicore/retro-httpaf-bench](https://github.com/ocaml-multicore/retro-httpaf-bench) includes a simple HTTP server using Eio. It shows how to use Eio with `httpaf`, and how to use multiple domains for increased performance.
 - [Awesome Multicore OCaml][] lists many other projects.
 
-## Porting from Lwt
+## Integrations
+
+Eio can be used with several other IO libraries.
+
+### Async
+
+[Async_eio][] has experimental support for running Async and Eio code together in a single domain.
+
+### Lwt
 
 You can use [Lwt_eio][] to run Lwt threads and Eio fibers together in a single domain,
 and to convert between Lwt and Eio promises.
 This may be useful during the process of porting existing code to Eio.
 
+### Unix and System Threads
+
+The [Eio_unix][] module provides features for using Eio with OCaml's Unix module.
+In particular, `Eio_unix.run_in_systhread` can be used to run a blocking operation in a separate systhread,
+allowing it to be used within Eio without blocking the whole domain.
+
 ## Further Reading
 
 - [lib_eio/eio.mli](lib_eio/eio.mli) documents Eio's public API.
 - [doc/rationale.md](doc/rationale.md) describes some of Eio's design tradeoffs in more detail.
-- [doc/eio_null.md](doc/eio_null.md) is a skeleton Eio backend with no actual IO.
+- [lib_eio/mock/backend.ml](lib_eio/mock/backend.ml) is a skeleton Eio backend with no actual IO.
 
 Some background about the effects system can be found in:
 
@@ -1118,13 +1334,12 @@ Some background about the effects system can be found in:
 - [Concurrent System Programming with Effect Handlers](https://www.repository.cam.ac.uk/bitstream/handle/1810/283239/paper.pdf?sequence=3&isAllowed=y)
 - [Asynchronous effect based IO using effect handlers](https://github.com/kayceesrk/ocaml-aeio)
 
-[Lwt_eio]: https://github.com/talex5/lwt_eio
+[Lwt_eio]: https://github.com/ocaml-multicore/lwt_eio
 [mirage-trace-viewer]: https://github.com/talex5/mirage-trace-viewer
 [structured concurrency]: https://en.wikipedia.org/wiki/Structured_concurrency
 [typed effects]: https://www.janestreet.com/tech-talks/effective-programming/
 [capability-based security]: https://en.wikipedia.org/wiki/Object-capability_model
 [Emily]: https://www.hpl.hp.com/techreports/2006/HPL-2006-116.pdf
-[http-bench]: https://github.com/ocaml-multicore/retro-httpaf-bench
 [gemini-eio]: https://gitlab.com/talex5/gemini-eio
 [Awesome Multicore OCaml]: https://github.com/patricoferris/awesome-multicore-ocaml
 [Eio]: https://ocaml-multicore.github.io/eio/eio/Eio/index.html
@@ -1135,7 +1350,8 @@ Some background about the effects system can be found in:
 [Eio.Switch]: https://ocaml-multicore.github.io/eio/eio/Eio/Switch/index.html
 [Eio.Net]: https://ocaml-multicore.github.io/eio/eio/Eio/Net/index.html
 [Eio.Buf_read]: https://ocaml-multicore.github.io/eio/eio/Eio/Buf_read/index.html
-[Eio.Dir]: https://ocaml-multicore.github.io/eio/eio/Eio/Dir/index.html
+[Eio.Buf_write]: https://ocaml-multicore.github.io/eio/eio/Eio/Buf_write/index.html
+[Eio.Path]: https://ocaml-multicore.github.io/eio/eio/Eio/Path/index.html
 [Eio.Time]: https://ocaml-multicore.github.io/eio/eio/Eio/Time/index.html
 [Eio.Domain_manager]: https://ocaml-multicore.github.io/eio/eio/Eio/Domain_manager/index.html
 [Eio.Promise]: https://ocaml-multicore.github.io/eio/eio/Eio/Promise/index.html
@@ -1145,3 +1361,9 @@ Some background about the effects system can be found in:
 [Eio_main]: https://ocaml-multicore.github.io/eio/eio_main/Eio_main/index.html
 [Eio.traceln]: https://ocaml-multicore.github.io/eio/eio/Eio/index.html#val-traceln
 [Eio_main.run]: https://ocaml-multicore.github.io/eio/eio_main/Eio_main/index.html#val-run
+[Eio_mock]: https://ocaml-multicore.github.io/eio/eio/Eio_mock/index.html
+[Eio_unix]: https://ocaml-multicore.github.io/eio/eio/Eio_unix/index.html
+[Async_eio]: https://github.com/talex5/async_eio
+[Eio.Mutex]: https://ocaml-multicore.github.io/eio/eio/Eio/Mutex/index.html
+[Eio.Semaphore]: https://ocaml-multicore.github.io/eio/eio/Eio/Semaphore/index.html
+[Eio.Condition]: https://ocaml-multicore.github.io/eio/eio/Eio/Condition/index.html

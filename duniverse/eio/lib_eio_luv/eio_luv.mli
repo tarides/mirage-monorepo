@@ -26,6 +26,12 @@ module Low_level : sig
   val sleep_until : float -> unit
   (** [sleep_until time] blocks until the current time is [time]. *)
 
+  (** {DNS functions} *)
+
+  val getaddrinfo : service:string -> string -> Eio.Net.Sockaddr.t list
+  (** [getaddrinfo ~service host] returns a list of IP addresses for [host]. [host] is either a domain name or
+      an ipaddress. *)
+
   (** {1 Low-level wrappers for Luv functions} *)
 
   module File : sig
@@ -67,6 +73,14 @@ module Low_level : sig
     val mkdir : mode:Luv.File.Mode.t list -> string -> unit or_error
     (** Wraps {!Luv.File.mkdir} *)
 
+    val rmdir : string -> unit or_error
+    (** Wraps {!Luv.File.rmdir} *)
+
+    val unlink : string -> unit or_error
+    (** Wraps {!Luv.File.unlink} *)
+
+    val readdir : string -> string list or_error
+    (** Wraps {!Luv.File.readdir}. [readdir] opens and closes the directory for reading for the user. *)
   end
 
   module Random : sig
@@ -76,6 +90,7 @@ module Low_level : sig
 
   module Handle : sig
     type 'a t
+      constraint 'a = [< `Poll | `Stream of [< `Pipe | `TCP | `TTY ] | `UDP ]
 
     val is_open : 'a t -> bool
     (** [is_open t] is [true] if {!close} hasn't been called yet. *)
@@ -110,9 +125,10 @@ type stdenv = <
   net : Eio.Net.t;
   domain_mgr : Eio.Domain_manager.t;
   clock : Eio.Time.clock;
-  fs : Eio.Dir.t;
-  cwd : Eio.Dir.t;
+  fs : Eio.Fs.dir Eio.Path.t;
+  cwd : Eio.Fs.dir Eio.Path.t;
   secure_random : Eio.Flow.source;
+  debug : Eio.Debug.t;
 >
 
 val get_fd : <has_fd; ..> -> Low_level.File.t
@@ -120,4 +136,4 @@ val get_fd_opt : #Eio.Generic.t -> Low_level.File.t option
 
 (** {1 Main Loop} *)
 
-val run : (stdenv -> unit) -> unit
+val run : (stdenv -> 'a) -> 'a

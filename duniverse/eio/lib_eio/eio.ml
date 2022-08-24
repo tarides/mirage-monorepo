@@ -1,35 +1,16 @@
-module Cancel = Cancel
+include Eio__core
 
-module Private = struct
-  module Fiber_context = Cancel.Fiber_context
-
-  module Effects = struct
-    type 'a enqueue = 'a Suspend.enqueue
-    type _ Effect.t += 
-      | Suspend = Suspend.Suspend
-      | Fork = Fiber.Fork
-      | Get_context = Cancel.Get_context
-      | Trace : (?__POS__:(string * int * int * int) -> ('a, Format.formatter, unit, unit) format4 -> 'a) Effect.t
-  end
-
-  module Effect = Effect
-  module Ctf = Ctf
-end
-
-let traceln ?__POS__ fmt =
-  Effect.perform Private.Effects.Trace ?__POS__ fmt
-
-module Promise = Promise
-module Fiber = Fiber
 module Fibre = Fiber
-module Switch = Switch
+
+module Debug = Private.Debug
+let traceln = Debug.traceln
 
 module Std = struct
   module Promise = Promise
   module Fiber = Fiber
   module Fibre = Fiber
   module Switch = Switch
-  let traceln = traceln
+  let traceln = Debug.traceln
 end
 
 module Semaphore = Semaphore
@@ -40,11 +21,12 @@ module Exn = Exn
 module Generic = Generic
 module Flow = Flow
 module Buf_read = Buf_read
+module Buf_write = Buf_write
 module Net = Net
 module Domain_manager = Domain_manager
 module Time = Time
-module Unix_perm = Dir.Unix_perm
-module Dir = Dir
+module Fs = Fs
+module Path = Path
 
 module Stdenv = struct
   type t = <
@@ -54,9 +36,10 @@ module Stdenv = struct
     net : Net.t;
     domain_mgr : Domain_manager.t;
     clock : Time.clock;
-    fs : Dir.t;
-    cwd : Dir.t;
+    fs : Fs.dir Path.t;
+    cwd : Fs.dir Path.t;
     secure_random : Flow.source;
+    debug : Debug.t;
   >
 
   let stdin  (t : <stdin  : #Flow.source; ..>) = t#stdin
@@ -66,6 +49,7 @@ module Stdenv = struct
   let domain_mgr (t : <domain_mgr : #Domain_manager.t; ..>) = t#domain_mgr
   let clock (t : <clock : #Time.clock; ..>) = t#clock
   let secure_random (t: <secure_random : #Flow.source; ..>) = t#secure_random
-  let fs (t : <fs : #Dir.t; ..>) = t#fs
-  let cwd (t : <cwd : #Dir.t; ..>) = t#cwd
+  let fs (t : <fs : #Fs.dir Path.t; ..>) = t#fs
+  let cwd (t : <cwd : #Fs.dir Path.t; ..>) = t#cwd
+  let debug (t : <debug : 'a; ..>) = t#debug
 end
