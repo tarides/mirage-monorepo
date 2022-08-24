@@ -224,7 +224,13 @@ struct
         ACK.transmit ack ack_number;
         notify ()
       in
-      Eio.Fiber.both ~label:"notify" send_empty_ack notify
+      Eio.Fiber.both 
+        (fun () -> 
+          Eio.Private.Ctf.label "tcpip.flow.tx.send_empty_ack";
+          send_empty_ack ()) 
+        (fun () -> 
+          Eio.Private.Ctf.label "tcpip.flow.tx.notify";
+          notify ())
   end
 
   module Rx = struct
@@ -388,18 +394,18 @@ struct
         ~tx_isn
     in
     (* When we transmit an ACK for a received segment, rx_ack is written to *)
-    let rx_ack = Eio.Stream.create ~label:"rx_ack" 1 in
+    let rx_ack = Eio.Stream.create 1 in
     (* When we receive an ACK for a transmitted segment, tx_ack is written to *)
-    let tx_ack = Eio.Stream.create ~label:"tx_ack" 1 in
+    let tx_ack = Eio.Stream.create 1 in
     (* When new data is received, rx_data is written to *)
-    let rx_data = Eio.Stream.create ~label:"rx_data" 1 in
+    let rx_data = Eio.Stream.create 1 in
     (* Write to this mvar to transmit an empty ACK to the remote side *)
-    let send_ack = Eio.Stream.create ~label:"send_ack" 1 in
+    let send_ack = Eio.Stream.create 1 in
     (* The user application receive buffer and close notification *)
     let rx_buf_size = Window.rx_wnd wnd in
     let urx = User_buffer.Rx.create ~max_size:rx_buf_size ~wnd in
     (* The window handling thread *)
-    let tx_wnd_update = Eio.Stream.create ~label:"tx_wnd_update" 1 in
+    let tx_wnd_update = Eio.Stream.create 1 in
     (* Set up transmit and receive queues *)
     let on_close () = clearpcb t id tx_isn in
     let state = State.t ~clock:t.clock ~on_close in
@@ -621,7 +627,8 @@ struct
   let copy_with_rsb rsb flow =
     try
       rsb @@ fun cstruct ->
-      writev flow cstruct
+      writev flow cstruct;
+      Cstruct.lenv cstruct
     with
     | End_of_file -> ()
 
@@ -639,7 +646,14 @@ struct
 
       method private read_source_buffer fn =
         match read flow with
-        | Ok (`Data buffer) -> fn [buffer]
+        | Ok (`Data buffer) -> 
+          let rec loop = function
+            | [] -> ()
+            | buf ->
+              let sz = fn buf in
+              loop (Cstruct.shiftv buf sz)
+          in
+          loop [buffer]
         | Ok `Eof -> raise End_of_file
         | Error _ -> raise End_of_file
       

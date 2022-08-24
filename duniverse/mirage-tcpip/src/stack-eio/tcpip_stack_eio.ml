@@ -30,34 +30,54 @@ module Make(Stack: Tcpip.Stack.V4V6) = struct
             flow
 
       method datagram_socket ~sw (`Udp (_addr, port)) =
-        let condition = Eio.Condition.create ~label:"udp socket" () in
+        let condition = Eio.Condition.create () in
+        let mutex = Eio.Mutex.create () in
+        let data = ref None in
+        let set_data value =
+          Eio.Mutex.use_rw ~protect:false mutex @@ fun () ->
+          data := value
+        in
         let () =
           Eio.Fiber.fork ~sw @@ fun () ->
           Stack.UDP.listen (Stack.udp stack) ~port
           @@ fun ~src ~dst:_ ~src_port buffer ->
+          data := Some (`Udp (mirage_ip_to_eio_ip src, src_port), buffer);
           (* the buffer should be copied ? *)
           Eio.Condition.broadcast condition
-            (`Udp (mirage_ip_to_eio_ip src, src_port), buffer)
         in
         (object
-           method recv buffer =
-             let sockaddr, netbuf = Eio.Condition.await condition in
-             let len = min (Cstruct.length netbuf) (Cstruct.length buffer) in
-             Cstruct.blit netbuf 0 buffer 0 len;
-             (sockaddr, len)
+          method probe : type a. a Eio.Generic.ty -> a option =
+            function _ -> None
 
-           method send (`Udp (addr, port)) buffer =
-             let ip = eio_ip_to_mirage_ip addr in
-             Stack.UDP.write ~dst:ip ~dst_port:port (Stack.udp stack) buffer
+          method recv buffer =
+            let rec wait () =
+              Eio.Mutex.use_rw ~protect:false mutex @@ fun () ->
+              match !data with
+              | Some (sockaddr, netbuf) ->
+                let len = min (Cstruct.length netbuf) (Cstruct.length buffer) in
+                Cstruct.blit netbuf 0 buffer 0 len;
+                data := None;
+                (sockaddr, len)
+              | None ->
+                Eio.Condition.await condition mutex;
+                wait ()
+            in
+            wait ()
+
+          method send (`Udp (addr, port)) buffer =
+            let ip = eio_ip_to_mirage_ip addr in
+            Stack.UDP.write ~dst:ip ~dst_port:port (Stack.udp stack) buffer
+
+          method close = () (* TODO *)
          end
-          :> Eio.Net.datagram_socket)
+          :> <Eio.Net.datagram_socket; Eio.Flow.close >)
 
       method listen ~reuse_addr:_ ~reuse_port:_ ~backlog ~sw =
         function
         | `Unix _ -> failwith "unix sockets are not implemented"
         | `Tcp (_addr, port) ->
             let flow_queue =
-              Eio.Stream.create ~label:"tcp flow queue" backlog
+              Eio.Stream.create backlog
             in
             let close_t, close_u =
               Eio.Promise.create ~label:"tcp listen close" ()
@@ -86,5 +106,7 @@ module Make(Stack: Tcpip.Stack.V4V6) = struct
                  function _ -> None
              end
               :> Eio.Net.listening_socket)
+      
+      method getaddrinfo ~service name = [] 
     end
 end

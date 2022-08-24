@@ -41,7 +41,9 @@ let run_domain ssock =
   in
   (* Wait for clients, and fork off echo servers. *)
   while true do
-    Eio.Net.accept_sub ssock ~sw ~on_error:log_connection_error handle_connection
+    Eio.Net.accept_fork ssock ~sw ~on_error:log_connection_error 
+      (fun flow str -> 
+        Eio.Switch.run @@ fun sw -> handle_connection ~sw flow str)
   done
 
 let main ~net ~domain_mgr ~n_domains port backlog =
