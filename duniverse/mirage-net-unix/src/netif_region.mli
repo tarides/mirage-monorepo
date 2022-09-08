@@ -25,6 +25,10 @@ val alloc : t -> chunk
 (** [alloc t] will allocate a single chuck of length [block_size]
     from the region [t]. *)
 
+val alloc_block : t -> chunk
+(** [alloc t] will allocate a single chuck of length [block_size]
+    from the region [t], or block until one is available. *)
+
 val free : chunk -> unit
 (** [free chunk] will return the memory [chunk] back to the region
     [t] where it can be reallocated. *)

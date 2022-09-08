@@ -7,6 +7,7 @@ type t = {
   block_size: int;
   slots: int;
   freelist: int Queue.t;
+  freelist_cond: Eio.Condition.t;
 }
 
 type chunk = t * int
@@ -18,15 +19,24 @@ let init ~block_size buf slots =
   for i = 0 to slots - 1 do
     Queue.push (i*block_size) freelist
   done;
-  { freelist; slots; block_size; buf }
+  
+  { freelist; slots; block_size; buf; freelist_cond = Eio.Condition.create () }
 
 let alloc t =
   match Queue.pop t.freelist with
   | r -> t, r
   | exception Queue.Empty -> raise No_space
 
-let free ({freelist; _}, v) =
-  Queue.push v freelist
+let rec alloc_block t =
+  match Queue.pop t.freelist with
+  | r -> t, r
+  | exception Queue.Empty ->
+    Eio.Condition.await_no_mutex t.freelist_cond;
+    alloc_block t
+
+let free (t, v) =
+  Queue.push v t.freelist;
+  Eio.Condition.broadcast t.freelist_cond
 
 let length ({block_size;_}, _) = block_size
 
