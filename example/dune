@@ -14,6 +14,7 @@
  (name httpaf_tcpip_server)
  (public_name httpaf-tcpip-server)
  (modules httpaf_tcpip_server)
+ (enabled_if (= %{system} "linux"))
  (libraries
   httpaf-eio
   tcpip.stack-eio

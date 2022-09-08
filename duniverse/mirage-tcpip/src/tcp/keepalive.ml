@@ -81,7 +81,8 @@ let next ~configuration ~ns state =
       let promise_cancel, cancel = Eio.Promise.create ~label:"keepalive" () in
       let t = { configuration; callback; state; cancel; clock; start } in
       Eio.Fiber.fork ~sw (fun () ->
-        Eio.Fiber.any ~label:"tcp.keepalive.create" [
+        Eio.Private.Ctf.label "tcp.keepalive.create";
+        Eio.Fiber.any [
           (fun () -> Eio.Promise.await promise_cancel);
           (fun () -> restart t)
         ]);
@@ -94,7 +95,8 @@ let next ~configuration ~ns state =
       t.cancel <- cancel;
       Eio.Promise.resolve t.cancel ();
       Eio.Fiber.fork ~sw (fun () ->
-        Eio.Fiber.any ~label:"tcp.keepalive.refresh" [
+        Eio.Private.Ctf.label "tcp.keepalive.refresh";
+        Eio.Fiber.any [
           (fun () -> Eio.Promise.await promise_cancel);
           (fun () -> restart t)
         ])

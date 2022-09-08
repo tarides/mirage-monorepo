@@ -18,7 +18,6 @@ let src = Logs.Src.create "eio_luv" ~doc:"Eio backend using luv"
 module Log = (val Logs.src_log src : Logs.LOG)
 
 open Eio.Std
-module Effect = Eio.Private.Effect
 
 module Ctf = Eio.Private.Ctf
 
@@ -38,8 +37,15 @@ let () =
 let wrap_error ~path e =
   let ex = Luv_error e in
   match e with
-  | `EEXIST -> Eio.Dir.Already_exists (path, ex)
-  | `ENOENT -> Eio.Dir.Not_found (path, ex)
+  | `EEXIST -> Eio.Fs.Already_exists (path, ex)
+  | `ENOENT -> Eio.Fs.Not_found (path, ex)
+  | _ -> ex
+
+let wrap_flow_error e =
+  let ex = Luv_error e in
+  match e with
+  | `ECONNRESET
+  | `EPIPE -> Eio.Net.Connection_reset ex
   | _ -> ex
 
 let or_raise = function
@@ -71,10 +77,24 @@ module Suspended = struct
     | Error x -> discontinue t x
 end
 
+type runnable =
+  | IO
+  | Thread of (unit -> unit)
+
+type fd_event_waiters = {
+  fd : Unix.file_descr;
+  handle : Luv.Poll.t;
+  read : unit Suspended.t Lwt_dllist.t;
+  write : unit Suspended.t Lwt_dllist.t;
+}
+
+module Fd_map = Map.Make(struct type t = Unix.file_descr let compare = Stdlib.compare end)
+
 type t = {
   loop : Luv.Loop.t;
   async : Luv.Async.t;                          (* Will process [run_q] when prodded. *)
-  run_q : (unit -> unit) Lf_queue.t;
+  run_q : runnable Lf_queue.t;
+  mutable fd_map : fd_event_waiters Fd_map.t;   (* Used for mapping readable/writable poll handles *)
 }
 
 type _ Effect.t += Await : (Luv.Loop.t -> Eio.Private.Fiber_context.t -> ('a -> unit) -> unit) -> 'a Effect.t
@@ -86,20 +106,118 @@ let enter fn = Effect.perform (Enter fn)
 let enter_unchecked fn = Effect.perform (Enter_unchecked fn)
 
 let enqueue_thread t k v =
-  Lf_queue.push t.run_q (fun () -> Suspended.continue k v);
+  Lf_queue.push t.run_q (Thread (fun () -> Suspended.continue k v));
   Luv.Async.send t.async |> or_raise
 
 let enqueue_result_thread t k r =
-  Lf_queue.push t.run_q (fun () -> Suspended.continue_result k r);
+  Lf_queue.push t.run_q (Thread (fun () -> Suspended.continue_result k r));
   Luv.Async.send t.async |> or_raise
 
 let enqueue_failed_thread t k ex =
-  Lf_queue.push t.run_q (fun () -> Suspended.discontinue k ex);
+  Lf_queue.push t.run_q (Thread (fun () -> Suspended.discontinue k ex));
   Luv.Async.send t.async |> or_raise
+
+module Poll : sig
+  val await_readable : t -> unit Suspended.t -> Unix.file_descr -> unit
+  val await_writable : t -> unit Suspended.t -> Unix.file_descr -> unit
+
+  val cancel_all : t -> Unix.file_descr -> unit
+  (** [cancel_all t fd] should be called just before [fd] is closed.
+      Any waiters will be cancelled. *)
+end = struct
+  (* According to the libuv docs:
+     - It is not okay to have multiple poll handles for the same file descriptor.
+     - The user should not close the file descriptor while it is being polled
+        by an active poll handle.
+
+     As such, we keep track of the mapping between poll handle and FD in the [fd_map].
+     This contains two queues of waiters for a given handle; those waiting for readability and
+     those waiting for writability.
+
+     Whenever the [read] queue is non-empty we enable polling for the READ event, and
+     whenevent the [write] queue is non-empty we enable polling for WRTIE. When both are
+     empty we stop polling. *)
+
+  let apply_all q fn =
+    let rec loop = function
+      | None -> ()
+      | Some v -> fn v; loop (Lwt_dllist.take_opt_r q)
+    in
+    loop (Lwt_dllist.take_opt_r q)
+
+  let enqueue_and_remove t fn (k : unit Suspended.t) v =
+    if Fiber_context.clear_cancel_fn k.fiber then
+      fn t k v
+
+  let rec poll_callback t events r =
+    begin match r with
+      | Ok (es : Luv.Poll.Event.t list) ->
+        if List.mem `READABLE es then apply_all events.read (fun k -> enqueue_and_remove t enqueue_thread k ());
+        if List.mem `WRITABLE es then apply_all events.write (fun k -> enqueue_and_remove t enqueue_thread k ());
+      | Error e ->
+        apply_all events.read (fun k -> enqueue_and_remove t enqueue_failed_thread k (Luv_error e));
+        apply_all events.write (fun k -> enqueue_and_remove t enqueue_failed_thread k (Luv_error e))
+    end;
+    update t events
+  and update t events =
+    let m = if Lwt_dllist.is_empty events.write then [] else [`WRITABLE] in
+    let m = if Lwt_dllist.is_empty events.read then m else `READABLE :: m in
+    if m = [] then (
+      Luv.Poll.stop events.handle |> or_raise;
+      t.fd_map <- Fd_map.remove events.fd t.fd_map
+    ) else (
+      Luv.Poll.start events.handle m (poll_callback t events)
+    )
+
+  let cancel_all t fd =
+    match Fd_map.find_opt fd t.fd_map with
+    | Some v ->
+      let ex = Failure "Closed file descriptor whilst polling" in
+      apply_all v.read (fun k -> enqueue_and_remove t enqueue_failed_thread k ex);
+      apply_all v.write (fun k -> enqueue_and_remove t enqueue_failed_thread k ex);
+      update t v
+    | None -> ()
+
+  let get_events t fd =
+    match Fd_map.find_opt fd t.fd_map with
+    | Some events -> events
+    | None ->
+      let handle = Luv.Poll.init ~loop:t.loop (Obj.magic fd : int) |> or_raise in
+      let events = {
+        fd;
+        handle;
+        read = Lwt_dllist.create ();
+        write = Lwt_dllist.create ();
+      } in
+      t.fd_map <- Fd_map.add fd events t.fd_map;
+      events
+
+  let await t (k:unit Suspended.t) events queue =
+    let was_empty = Lwt_dllist.is_empty queue in
+    let node = Lwt_dllist.add_l k queue in
+    (* Set the fiber cancel function, which first removes the continutation
+       from the list to continue when the FD becomes readable or writeable.
+       Then it checks if the poll handle can be stopped and the mapping
+       removed. *)
+    Fiber_context.set_cancel_fn k.fiber (fun ex ->
+        Lwt_dllist.remove node;
+        if Lwt_dllist.is_empty queue then update t events;
+        enqueue_failed_thread t k ex
+      );
+    if was_empty then update t events
+
+  let await_readable t k fd =
+    let events = get_events t fd in
+    await t k events events.read
+
+  let await_writable t k fd =
+    let events = get_events t fd in
+    await t k events events.write
+end
 
 (* Can only be called from our domain. *)
 let enqueue_at_head t k v =
-  Lf_queue.push_head t.run_q (fun () -> Suspended.continue k v);
+  Lf_queue.push_head t.run_q (Thread (fun () -> Suspended.continue k v));
   Luv.Async.send t.async |> or_raise
 
 let get_loop () =
@@ -111,6 +229,9 @@ module Low_level = struct
 
   exception Luv_error = Luv_error
   let or_raise = or_raise
+
+  let await fn =
+    Effect.perform (Await fn)
 
   let await_exn fn =
     Effect.perform (Await fn) |> or_raise
@@ -140,7 +261,7 @@ module Low_level = struct
       mutable release_hook : Eio.Switch.hook;        (* Use this on close to remove switch's [on_release] hook. *)
       close_unix : bool;
       mutable fd : [`Open of 'a Luv.Handle.t | `Closed]
-    }
+    } constraint 'a = [< `Poll | `Stream of [< `Pipe | `TCP | `TTY ] | `UDP ]
 
     let get op = function
       | { fd = `Open fd; _ } -> fd
@@ -157,6 +278,11 @@ module Low_level = struct
       Eio.Switch.remove_hook t.release_hook;
       if t.close_unix then (
         enter_unchecked @@ fun t k ->
+        begin match Luv.Handle.fileno fd with
+          | Ok fd -> Poll.cancel_all t (Luv_unix.Os_fd.Fd.to_unix fd)
+          | Error `EBADF -> ()  (* We don't have a Unix FD yet, so we can't be watching it. *)
+          | Error e -> raise (Luv_error e)
+        end;
         Luv.Handle.close fd (enqueue_thread t k)
       )
 
@@ -206,7 +332,12 @@ module Low_level = struct
       let fd = get "close" t in
       t.fd <- `Closed;
       Eio.Switch.remove_hook t.release_hook;
-      await_exn (fun loop _fiber -> Luv.File.close ~loop fd)
+      enter_unchecked (fun st k ->
+          let os_fd = Luv.File.get_osfhandle fd |> or_raise in
+          let unix_fd = Luv_unix.Os_fd.Fd.to_unix os_fd in
+          Poll.cancel_all st unix_fd;
+          Luv.File.close ~loop:st.loop fd (enqueue_thread st k)
+        ) |> or_raise
 
     let ensure_closed t =
       if is_open t then close t
@@ -248,6 +379,43 @@ module Low_level = struct
       let request = Luv.File.Request.make () in
       await_with_cancel ~request (fun loop -> Luv.File.mkdir ~loop ~request ~mode path)
 
+    let unlink path =
+      let request = Luv.File.Request.make () in
+      await_with_cancel ~request (fun loop -> Luv.File.unlink ~loop ~request path)
+
+    let rmdir path =
+      let request = Luv.File.Request.make () in
+      await_with_cancel ~request (fun loop -> Luv.File.rmdir ~loop ~request path)
+
+    let rename old_path new_path =
+      let request = Luv.File.Request.make () in
+      await_with_cancel ~request (fun loop -> Luv.File.rename ~loop ~request old_path ~to_:new_path)
+
+    let opendir path =
+      let request = Luv.File.Request.make () in
+      await_with_cancel ~request (fun loop -> Luv.File.opendir ~loop ~request path)
+
+    let closedir path =
+      let request = Luv.File.Request.make () in
+      await_with_cancel ~request (fun loop -> Luv.File.closedir ~loop ~request path)
+
+    let with_dir_to_read path fn =
+      match opendir path with
+      | Ok dir ->
+        Fun.protect ~finally:(fun () -> closedir dir |> or_raise) @@ fun () -> fn dir
+      | Error _ as e -> e
+
+    let readdir path =
+      let fn dir =
+        let request = Luv.File.Request.make () in
+        match await_with_cancel ~request (fun loop -> Luv.File.readdir ~loop ~request dir) with
+        | Ok dirents ->
+          let dirs = Array.map (fun v -> v.Luv.File.Dirent.name) dirents |> Array.to_list in
+          Ok dirs
+        | Error _ as e -> e
+      in
+        with_dir_to_read path fn
+
     let to_unix op t =
       let os_fd = Luv.File.get_osfhandle (get "to_unix" t) |> or_raise in
       let fd = Luv_unix.Os_fd.Fd.to_unix os_fd in
@@ -260,9 +428,12 @@ module Low_level = struct
   end
 
   module Random = struct
-    let fill buf =
+    let rec fill buf =
       let request = Luv.Random.Request.make () in
-      await_with_cancel ~request (fun loop -> Luv.Random.random ~loop ~request buf) |> or_raise
+      match await_with_cancel ~request (fun loop -> Luv.Random.random ~loop ~request buf) with
+      | Ok x -> x
+      | Error `EINTR -> fill buf
+      | Error x -> raise (Luv_error x)
   end
 
   module Stream = struct
@@ -285,25 +456,26 @@ module Low_level = struct
         if len > 0 then len
         else read_into sock buf       (* Luv uses a zero-length read to mean EINTR! *)
       | Error `EOF -> raise End_of_file
-      | Error (`ECONNRESET as e) -> raise (Eio.Net.Connection_reset (Luv_error e))
-      | Error x -> raise (Luv_error x)
+      | Error x -> raise (wrap_flow_error x)
 
     let rec skip_empty = function
       | empty :: xs when Luv.Buffer.size empty = 0 -> skip_empty xs
       | xs -> xs
 
     let rec write t bufs =
-      let err, n = 
+      let err, n =
         (* note: libuv doesn't seem to allow cancelling stream writes *)
         enter (fun st k ->
             Luv.Stream.write (Handle.get "write_stream" t) bufs @@ fun err n ->
             enqueue_thread st k (err, n)
           )
       in
-      or_raise err;
-      match Luv.Buffer.drop bufs n |> skip_empty with
-      | [] -> ()
-      | bufs -> write t bufs
+      match err with
+      | Error e -> raise (wrap_flow_error e)
+      | Ok () ->
+        match Luv.Buffer.drop bufs n |> skip_empty with
+        | [] -> ()
+        | bufs -> write t bufs
 
     let to_unix_opt = Handle.to_unix_opt
 
@@ -311,35 +483,7 @@ module Low_level = struct
       Luv_unix.Os_fd.Socket.from_unix fd |> or_raise
   end
 
-  module Poll = struct
-    let await_readable t (k:unit Suspended.t) fd =
-      let poll = Luv.Poll.init ~loop:t.loop (Obj.magic fd) |> or_raise in
-      Fiber_context.set_cancel_fn k.fiber (fun ex ->
-          Luv.Poll.stop poll |> or_raise;
-          enqueue_failed_thread t k ex
-        );
-      Luv.Poll.start poll [`READABLE;] (fun r ->
-          Luv.Poll.stop poll |> or_raise;
-          if Fiber_context.clear_cancel_fn k.fiber then
-            match r with
-            | Ok (_ : Luv.Poll.Event.t list) -> enqueue_thread t k ()
-            | Error e -> enqueue_failed_thread t k (Luv_error e)
-        )
-
-    let await_writable t (k:unit Suspended.t) fd =
-      let poll = Luv.Poll.init ~loop:t.loop (Obj.magic fd) |> or_raise in
-      Fiber_context.set_cancel_fn k.fiber (fun ex ->
-          Luv.Poll.stop poll |> or_raise;
-          enqueue_failed_thread t k ex
-        );
-      Luv.Poll.start poll [`WRITABLE;] (fun r ->
-          Luv.Poll.stop poll |> or_raise;
-          if Fiber_context.clear_cancel_fn k.fiber then
-            match r with
-            | Ok (_ : Luv.Poll.Event.t list) -> enqueue_thread t k ()
-            | Error e -> enqueue_failed_thread t k (Luv_error e)
-        )
-  end
+  module Poll = Poll
 
   let sleep_until due =
     let delay = 1000. *. (due -. Unix.gettimeofday ()) |> ceil |> truncate |> max 0 in
@@ -353,6 +497,28 @@ module Low_level = struct
     Luv.Timer.start timer delay (fun () ->
         if Fiber_context.clear_cancel_fn k.fiber then enqueue_thread st k ()
       ) |> or_raise
+
+  (* https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml *)
+  let getaddrinfo ~service node =
+    let ( let* ) o f = Option.bind o f in
+    let to_eio_sockaddr_t {Luv.DNS.Addr_info.family; addr; socktype; protocol; _ } =
+      match family, socktype with
+      | (`INET | `INET6),
+        (`STREAM | `DGRAM) -> (
+          let* host = Luv.Sockaddr.to_string addr in
+          let* port = Luv.Sockaddr.port addr in
+          let ipaddr = Unix.inet_addr_of_string host |> Eio_unix.Ipaddr.of_unix in
+          match protocol with
+          | 6 -> Some (`Tcp (ipaddr, port))
+          | 17 -> Some (`Udp (ipaddr, port))
+          | _ -> None)
+      | _ -> None
+    in
+    let request = Luv.DNS.Addr_info.Request.make () in
+    await_with_cancel ~request (fun loop -> Luv.DNS.getaddrinfo ~loop ~request ~service ~node ())
+    |> or_raise
+    |> List.filter_map to_eio_sockaddr_t
+
 end
 
 open Low_level
@@ -405,6 +571,8 @@ let socket sock = object
     | Eio_unix.Private.Unix_file_descr op -> Stream.to_unix_opt op sock
     | x -> super#probe x
 
+  method unix_fd op = Stream.to_unix_opt op sock |> Option.get
+
   method read_into buf =
     let buf = Cstruct.to_bigarray buf in
     Stream.read_into sock buf
@@ -424,10 +592,11 @@ let socket sock = object
 
   method shutdown = function
     | `Send -> await_exn (fun _loop _fiber -> Luv.Stream.shutdown (Handle.get "shutdown" sock))
-    | `Receive -> failwith "shutdown receive not supported"
-    | `All ->
-      Log.warn (fun f -> f "shutdown receive not supported");
-      await_exn (fun _loop _fiber -> Luv.Stream.shutdown (Handle.get "shutdown" sock))
+    | `Receive | `All as cmd ->
+      let fd = Stream.to_unix_opt `Peek sock |> Option.get in
+      Unix.shutdown fd @@ match cmd  with
+      | `Receive -> Unix.SHUTDOWN_RECEIVE
+      | `All -> Unix.SHUTDOWN_ALL
 end
 
 class virtual ['a] listening_socket ~backlog sock = object (self)
@@ -485,7 +654,7 @@ module Udp = struct
   type 'a t = [`UDP] Handle.t
 
   (* When the sender address in the callback of [recv_start] is [None], this usually indicates
-     EAGAIN according to the luv documentation which can be ignored. Libuv calls the callback 
+     EAGAIN according to the luv documentation which can be ignored. Libuv calls the callback
      in case C programs wish to handle the allocated buffer in some way. *)
   let recv (sock:'a t) buf =
     let r = enter (fun t k ->
@@ -506,20 +675,23 @@ module Udp = struct
     match r with
     | Ok (buf', sockaddr, _recv_flags) ->
       `Udp (luv_ip_addr_to_eio sockaddr), Luv.Buffer.size buf'
-    | Error (`ECONNRESET as e) -> raise (Eio.Net.Connection_reset (Luv_error e))
-    | Error x -> raise (Luv_error x)
+    | Error x -> raise (wrap_flow_error x)
 
-  let send t buf = function 
+  let send t buf = function
   | `Udp (host, port) ->
     let bufs = [ Cstruct.to_bigarray buf ] in
-    await_exn (fun _loop _fiber -> Luv.UDP.send (Handle.get "send" t) bufs (luv_addr_of_eio host port))
+    match await (fun _loop _fiber -> Luv.UDP.send (Handle.get "send" t) bufs (luv_addr_of_eio host port)) with
+    | Ok () -> ()
+    | Error e -> raise (wrap_flow_error e)
 end
 
 let udp_socket endp = object
   inherit Eio.Net.datagram_socket
 
-  method send sockaddr bufs = Udp.send endp bufs sockaddr 
-  method recv buf = 
+  method close = Handle.close endp
+
+  method send sockaddr bufs = Udp.send endp bufs sockaddr
+  method recv buf =
     let buf = Cstruct.to_bigarray buf in
     Udp.recv endp buf
 end
@@ -573,20 +745,22 @@ let net = object
       let sock = Luv.TCP.init ~loop:(get_loop ()) () |> or_raise |> Handle.of_luv ~sw in
       let addr = luv_addr_of_eio host port in
       await_exn (fun _loop _fiber -> Luv.TCP.connect (Handle.get "connect" sock) addr);
-      socket sock
+      (socket sock :> < Eio.Flow.two_way; Eio.Flow.close> )
     | `Unix path ->
       let sock = Luv.Pipe.init ~loop:(get_loop ()) () |> or_raise |> Handle.of_luv ~sw in
       await_exn (fun _loop _fiber -> Luv.Pipe.connect (Handle.get "connect" sock) path);
-      socket sock
+      (socket sock :> < Eio.Flow.two_way; Eio.Flow.close> )
 
   method datagram_socket ~sw = function
-    | `Udp (host, port) -> 
+    | `Udp (host, port) ->
       let domain = Eio.Net.Ipaddr.fold ~v4:(fun _ -> `INET) ~v6:(fun _ -> `INET6) host in
       let sock = Luv.UDP.init ~domain ~loop:(get_loop ()) () |> or_raise in
       let dg_sock = Handle.of_luv ~sw sock in
       let addr = luv_addr_of_eio host port in
       Luv.UDP.bind sock addr |> or_raise;
       udp_socket dg_sock
+
+  method getaddrinfo = Low_level.getaddrinfo
 end
 
 let secure_random =
@@ -606,9 +780,10 @@ type stdenv = <
   net : Eio.Net.t;
   domain_mgr : Eio.Domain_manager.t;
   clock : Eio.Time.clock;
-  fs : Eio.Dir.t;
-  cwd : Eio.Dir.t;
+  fs : Eio.Fs.dir Eio.Path.t;
+  cwd : Eio.Fs.dir Eio.Path.t;
   secure_random : Eio.Flow.source;
+  debug : Eio.Debug.t;
 >
 
 let domain_mgr ~run_event_loop = object (self)
@@ -655,15 +830,26 @@ let clock = object
   method sleep_until = sleep_until
 end
 
+type _ Eio.Generic.ty += Dir_resolve_new : (string -> string) Eio.Generic.ty
+let dir_resolve_new x = Eio.Generic.probe x Dir_resolve_new
+
 (* Warning: libuv doesn't provide [openat], etc, and so there is probably no way to make this safe.
    We make a best-efforts attempt to enforce the sandboxing using realpath and [`NOFOLLOW].
    todo: this needs more testing *)
-class dir dir_path = object (self)
-  inherit Eio.Dir.t
+class dir ~label (dir_path : string) = object (self)
+  inherit Eio.Fs.dir
+
+  val mutable closed = false
+
+  method! probe : type a. a Eio.Generic.ty -> a option = function
+    | Dir_resolve_new -> Some self#resolve_new
+    | _ -> None
 
   (* Resolve a relative path to an absolute one, with no symlinks.
-     @raise Eio.Dir.Permission_denied if it's outside of [dir_path]. *)
-  method private resolve path =
+     @raise Eio.Fs.Permission_denied if it's outside of [dir_path]. *)
+  method private resolve ?display_path path =
+    if closed then Fmt.invalid_arg "Attempt to use closed directory %S" dir_path;
+    let display_path = Option.value display_path ~default:path in
     if Filename.is_relative path then (
       let dir_path = File.realpath dir_path |> or_raise_path dir_path in
       let full = File.realpath (Filename.concat dir_path path) |> or_raise_path path in
@@ -673,9 +859,9 @@ class dir dir_path = object (self)
       else if full = dir_path then
         full
       else
-        raise (Eio.Dir.Permission_denied (path, Failure (Fmt.str "Path %S is outside of sandbox %S" full dir_path)))
+        raise (Eio.Fs.Permission_denied (display_path, Failure (Fmt.str "Path %S is outside of sandbox %S" full dir_path)))
     ) else (
-      raise (Eio.Dir.Permission_denied (path, Failure (Fmt.str "Path %S is absolute" path)))
+      raise (Eio.Fs.Permission_denied (display_path, Failure (Fmt.str "Path %S is absolute" path)))
     )
 
   (* We want to create [path]. Check that the parent is in the sandbox. *)
@@ -684,8 +870,10 @@ class dir dir_path = object (self)
     if leaf = ".." then Fmt.failwith "New path %S ends in '..'!" path
     else match self#resolve dir with
       | dir -> Filename.concat dir leaf
-      | exception Eio.Dir.Permission_denied (dir, ex) ->
-        raise (Eio.Dir.Permission_denied (Filename.concat dir leaf, ex))
+      | exception Eio.Fs.Not_found (dir, ex) ->
+        raise (Eio.Fs.Not_found (Filename.concat dir leaf, ex))
+      | exception Eio.Fs.Permission_denied (dir, ex) ->
+        raise (Eio.Fs.Permission_denied (Filename.concat dir leaf, ex))
 
   method open_in ~sw path =
     let fd = File.open_ ~sw (self#resolve path) [`NOFOLLOW; `RDONLY] |> or_raise_path path in
@@ -706,30 +894,61 @@ class dir dir_path = object (self)
       else self#resolve_new path
     in
     let fd = File.open_ ~sw real_path flags ~mode:[`NUMERIC mode] |> or_raise_path path in
-    (flow fd :> <Eio.Dir.rw; Eio.Flow.close>)
+    (flow fd :> <Eio.Fs.rw; Eio.Flow.close>)
 
   method open_dir ~sw path =
     Switch.check sw;
-    new dir (self#resolve path)
+    let label = Filename.basename path in
+    let d = new dir ~label (self#resolve path) in
+    Switch.on_release sw (fun () -> d#close);
+    d
 
   (* libuv doesn't seem to provide a race-free way to do this. *)
   method mkdir ~perm path =
     let real_path = self#resolve_new path in
     File.mkdir ~mode:[`NUMERIC perm] real_path |> or_raise_path path
 
-  method close = ()
+  (* libuv doesn't seem to provide a race-free way to do this. *)
+  method unlink path =
+    let dir_path = Filename.dirname path in
+    let leaf = Filename.basename path in
+    let real_dir_path = self#resolve ~display_path:path dir_path in
+    File.unlink (Filename.concat real_dir_path leaf) |> or_raise_path path
+
+  (* libuv doesn't seem to provide a race-free way to do this. *)
+  method rmdir path =
+    let dir_path = Filename.dirname path in
+    let leaf = Filename.basename path in
+    let real_dir_path = self#resolve ~display_path:path dir_path in
+    File.rmdir (Filename.concat real_dir_path leaf) |> or_raise_path path
+
+  method read_dir path =
+    let path = self#resolve path in
+    File.readdir path |> or_raise_path path
+
+  method rename old_path new_dir new_path =
+    match dir_resolve_new new_dir with
+    | None -> invalid_arg "Target is not a luv directory!"
+    | Some new_resolve_new ->
+      let old_path = self#resolve old_path in
+      let new_path = new_resolve_new new_path in
+      File.rename old_path new_path |> or_raise_path old_path
+
+  method close = closed <- true
+
+  method pp f = Fmt.string f (String.escaped label)
 end
 
 (* Full access to the filesystem. *)
 let fs = object
-  inherit dir "/"
+  inherit dir ~label:"fs" "."
 
   (* No checks *)
-  method! private resolve path = path
+  method! private resolve ?display_path:_ path = path
 end
 
 let cwd = object
-  inherit dir "."
+  inherit dir  ~label:"cwd" "."
 end
 
 let stdenv ~run_event_loop =
@@ -743,22 +962,42 @@ let stdenv ~run_event_loop =
     method net = net
     method domain_mgr = domain_mgr ~run_event_loop
     method clock = clock
-    method fs = (fs :> Eio.Dir.t)
-    method cwd = (cwd :> Eio.Dir.t)
+    method fs = (fs :> Eio.Fs.dir), "."
+    method cwd = (cwd :> Eio.Fs.dir), "."
     method secure_random = secure_random
+    method debug = Eio.Private.Debug.v
   end
 
-let rec wakeup run_q =
+let rec wakeup ~async ~io_queued run_q =
   match Lf_queue.pop run_q with
-  | Some f -> f (); wakeup run_q
+  | Some (Thread f) ->
+    if not !io_queued then (
+      Lf_queue.push run_q IO;
+      io_queued := true;
+    );
+    f ();
+    wakeup ~async ~io_queued run_q
+  | Some IO ->
+    (* If threads keep yielding they could prevent pending IO from being processed.
+       Therefore, we keep an [IO] job on the queue to force us to check from time to time. *)
+    io_queued := false;
+    if not (Lf_queue.is_empty run_q) then
+      Luv.Async.send async |> or_raise
   | None -> ()
 
-let rec run main =
+let rec run : type a. (_ -> a) -> a = fun main ->
   Log.debug (fun l -> l "starting run");
   let loop = Luv.Loop.init () |> or_raise in
   let run_q = Lf_queue.create () in
-  let async = Luv.Async.init ~loop (fun _async -> wakeup run_q) |> or_raise in
-  let st = { loop; async; run_q } in
+  let io_queued = ref false in
+  let async = Luv.Async.init ~loop (fun async ->
+      try wakeup ~async ~io_queued run_q
+      with ex ->
+        let bt = Printexc.get_raw_backtrace () in
+        Fmt.epr "Uncaught exception in run loop:@,%a@." Fmt.exn_backtrace (ex, bt);
+        Luv.Loop.stop loop
+    ) |> or_raise in
+  let st = { loop; async; run_q; fd_map = Fd_map.empty } in
   let stdenv = stdenv ~run_event_loop:run in
   let rec fork ~new_fiber:fiber fn =
     Ctf.note_switch (Fiber_context.tid fiber);
@@ -769,13 +1008,11 @@ let rec run main =
       effc = fun (type a) (e : a Effect.t) ->
         match e with
         | Await fn ->
-          Some (fun k -> 
+          Some (fun k ->
             let k = { Suspended.k; fiber } in
             fn loop fiber (enqueue_thread st k))
-        | Eio.Private.Effects.Trace ->
-          Some (fun k -> continue k Eio_utils.Trace.default_traceln)
         | Eio.Private.Effects.Fork (new_fiber, f) ->
-          Some (fun k -> 
+          Some (fun k ->
               let k = { Suspended.k; fiber } in
               enqueue_at_head st k ();
               fork ~new_fiber f
@@ -790,7 +1027,7 @@ let rec run main =
             | None -> fn st { Suspended.k; fiber }
           )
         | Eio.Private.Effects.Suspend fn ->
-          Some (fun k -> 
+          Some (fun k ->
               let k = { Suspended.k; fiber } in
               fn fiber (enqueue_result_thread st k)
             )
@@ -815,7 +1052,28 @@ let rec run main =
               let sock = Luv.TCP.init ~loop () |> or_raise in
               let handle = Handle.of_luv ~sw ~close_unix sock in
               Luv.TCP.open_ sock fd |> or_raise;
-              continue k (socket handle :> < Eio.Flow.two_way; Eio.Flow.close >)
+              continue k (socket handle :> Eio_unix.socket)
+            with Luv_error _ as ex ->
+              discontinue k ex
+          )
+        | Eio_unix.Private.Socketpair (sw, domain, ty, protocol) -> Some (fun k ->
+            try
+              if domain <> Unix.PF_UNIX then failwith "Only PF_UNIX sockets are supported by libuv";
+              let ty =
+                match ty with
+                | Unix.SOCK_DGRAM -> `DGRAM
+                | Unix.SOCK_STREAM -> `STREAM
+                | Unix.SOCK_RAW -> `RAW
+                | Unix.SOCK_SEQPACKET -> failwith "Type SEQPACKET not support by libuv"
+              in
+              let a, b = Luv.TCP.socketpair ty protocol |> or_raise in
+              let wrap x =
+                let sock = Luv.TCP.init ~loop () |> or_raise in
+                Luv.TCP.open_ sock x |> or_raise;
+                let h = Handle.of_luv ~sw ~close_unix:true sock in
+                (socket h :> Eio_unix.socket)
+              in
+              continue k (wrap a, wrap b)
             with Luv_error _ as ex ->
               discontinue k ex
           )
@@ -826,7 +1084,7 @@ let rec run main =
   let new_fiber = Fiber_context.make_root () in
   fork ~new_fiber (fun () ->
       begin match main stdenv with
-        | () -> main_status := `Done
+        | v -> main_status := `Done v
         | exception ex -> main_status := `Ex (ex, Printexc.get_raw_backtrace ())
       end;
       Luv.Loop.stop loop
@@ -835,6 +1093,6 @@ let rec run main =
   Lf_queue.close st.run_q;
   Luv.Handle.close async (fun () -> Luv.Loop.close loop |> or_raise);
   match !main_status with
-  | `Done -> ()
+  | `Done v -> v
   | `Ex (ex, bt) -> Printexc.raise_with_backtrace ex bt
   | `Running -> failwith "Deadlock detected: no events scheduled but main function hasn't returned"

@@ -43,6 +43,6 @@ let () =
     [ ("-p", Arg.Set_int port, " Listening port number(8080 by default)") ]
     ignore "An HTTP/1.1 server";
 
-  Eio_linux.run ~queue_depth:2048 ~polling_timeout:2000 @@ fun env ->
+  Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw -> 
   Server.run ~port:!port (env :> Eio.Stdenv.t) sw app

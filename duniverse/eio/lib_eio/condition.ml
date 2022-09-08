@@ -1,24 +1,25 @@
-type 'a t = {
-  waiters: 'a Waiters.t; 
+type t = {
+  waiters: unit Waiters.t;
   mutex: Mutex.t;
   id: Ctf.id
 }
 
-let create ?label () =
-  let id = Ctf.mint_id () in
-  Ctf.note_created ?label id Ctf.Condition;
-  {
-    waiters = Waiters.create ();
-    id ;
-    mutex = Mutex.create ()
-  }
+let create () = {
+  waiters = Waiters.create ();
+  id = Ctf.mint_id ();
+  mutex = Mutex.create ();
+}
 
-let await ?mutex t = 
+let await t mutex =
   Mutex.lock t.mutex;
-  Option.iter Eio_mutex.unlock mutex;
-  let res = Waiters.await ~mutex:(Some t.mutex) t.waiters t.id in
-  Option.iter Eio_mutex.lock mutex;
-  res
+  Eio_mutex.unlock mutex;
+  match Waiters.await ~mutex:(Some t.mutex) t.waiters t.id with
+  | ()           -> Eio_mutex.lock mutex
+  | exception ex -> Eio_mutex.lock mutex; raise ex
 
-let broadcast t v =
-  Waiters.wake_all t.waiters v
+let await_no_mutex t =
+  Mutex.lock t.mutex;
+  Waiters.await ~mutex:(Some t.mutex) t.waiters t.id
+
+let broadcast t =
+  Waiters.wake_all t.waiters ()

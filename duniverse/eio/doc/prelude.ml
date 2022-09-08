@@ -13,7 +13,7 @@ module Eio_main = struct
          multiple times, they'll get woken in the right order. At the moment,
          the scheduler only checks for expired timers when the run-queue is
          empty, so this is a convenient way to wait for the system to be idle.
-         Will need revising if we make the scheduler fair at some point. *)
+         TODO: This is no longer true (since #213). *)
       Eio.Time.sleep_until real_clock time;
       now := max !now time
   end
@@ -24,16 +24,13 @@ module Eio_main = struct
     method run_raw fn = fn ()
   end
 
-  (* https://github.com/ocaml/ocaml/issues/10324 *)
-  let dontcrash = Sys.opaque_identity
-
   let run fn =
     Eio_main.run @@ fun env ->
     fn @@ object
-      method net        = dontcrash env#net
-      method stdin      = dontcrash env#stdin
-      method stdout     = dontcrash env#stdout
-      method cwd        = dontcrash env#cwd
+      method net        = env#net
+      method stdin      = env#stdin
+      method stdout     = env#stdout
+      method cwd        = env#cwd
       method domain_mgr = fake_domain_mgr
       method clock      = fake_clock env#clock
     end

@@ -20,16 +20,16 @@ let with_mutex t f =
   | exception ex -> Mutex.unlock t.mutex; raise ex
 
 (* Invariants *)
-let validate t =
+let _validate t =
   with_mutex t @@ fun () ->
   assert (Queue.length t.items <= t.capacity);
   assert (Waiters.is_empty t.readers || Queue.is_empty t.items);
   assert (Waiters.is_empty t.writers || Queue.length t.items = t.capacity)
 
-let create ?label capacity =
+let create capacity =
   assert (capacity >= 0);
   let id = Ctf.mint_id () in
-  Ctf.note_created ?label id Ctf.Stream;
+  Ctf.note_created id Ctf.Stream;
   {
     mutex = Mutex.create ();
     id;

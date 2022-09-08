@@ -65,9 +65,10 @@ type stdenv = <
   net : Eio.Net.t;
   domain_mgr : Eio.Domain_manager.t;
   clock : Eio.Time.clock;
-  fs : Eio.Dir.t;
-  cwd : Eio.Dir.t;
+  fs : Eio.Fs.dir Eio.Path.t;
+  cwd : Eio.Fs.dir Eio.Path.t;
   secure_random : Eio.Flow.source;
+  debug : Eio.Debug.t;
 >
 
 val get_fd : <has_fd; ..> -> FD.t
@@ -84,8 +85,8 @@ val run :
   ?n_blocks:int ->
   ?block_size:int ->
   ?polling_timeout:int ->
-  ?fallback:([`Msg of string] -> unit) ->
-  (stdenv -> unit) -> unit
+  ?fallback:([`Msg of string] -> 'a) ->
+  (stdenv -> 'a) -> 'a
 (** Run an event loop using io_uring.
 
     Uses {!Uring.create} to create the io_uring,
@@ -186,6 +187,10 @@ module Low_level : sig
       If multiple buffers are given, they are sent in order.
       It will make multiple OS calls if the OS doesn't write all of it at once. *)
 
+  val writev_single : ?file_offset:Optint.Int63.t -> FD.t -> Cstruct.t list -> int
+  (** [writev_single] is like [writev] but only performs a single write operation.
+      It returns the number of bytes written, which may be smaller than the requested amount. *)
+
   val splice : FD.t -> dst:FD.t -> len:int -> int
   (** [splice src ~dst ~len] attempts to copy up to [len] bytes of data from [src] to [dst].
 
@@ -204,6 +209,11 @@ module Low_level : sig
 
   val fstat : FD.t -> Unix.stats
   (** Like {!Unix.fstat}. *)
+
+  val read_dir : FD.t -> string list
+  (** [read_dir dir] reads all directory entries from [dir].
+      The entries are not returned in any particular order
+      (not even necessarily the order in which Linux returns them). *)
 
   (** {1 Sockets} *)
 
@@ -237,4 +247,11 @@ module Low_level : sig
      It uses Linux's [getrandom] call, which is like reading from /dev/urandom
      except that it will block (the whole domain) if used at early boot
      when the random system hasn't been initialised yet. *)
+
+  (** {1 DNS functions} *)
+
+  val getaddrinfo : service:string -> string -> Eio.Net.Sockaddr.t list
+  (** [getaddrinfo host] returns a list of IP addresses for [host]. [host] is either a domain name or
+      an ipaddress. *)
+
 end
