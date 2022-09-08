@@ -27,6 +27,7 @@ type t = {
   mac : Macaddr.t;
   mtu : int;
   stats : Mirage_net.stats;
+  read_buffer : Netif_region.t;
 }
 
 let fd t = t.dev
@@ -51,6 +52,10 @@ let connect ~sw devname =
         m "plugging into %s with mac %a and mtu %d" devname Macaddr.pp mac mtu);
     let active = true in
     let stats = Mirage_net.Stats.create () in
+    let slots = 64 in
+    let size = mtu + 18 (* TODO *) in
+    let buffer = Cstruct.create (size * slots) in
+    let read_buffer = Netif_region.init ~block_size:size buffer.buffer slots in
     let t =
       {
         id = devname;
@@ -59,6 +64,7 @@ let connect ~sw devname =
         mac;
         mtu;
         stats;
+        read_buffer;
       }
     in
     Log.info (fun m -> m "connect %s with mac %a" devname Macaddr.pp mac);
@@ -122,12 +128,14 @@ let listen t ~header_size fn =
       match t.active with
       | true -> (
           let region = Cstruct.create (t.mtu + header_size) in
+          let chunk = Netif_region.alloc_block t.read_buffer in
           let process () =
-            match read t region with
+            match read t (Netif_region.to_cstruct chunk) with
             | Ok buf ->
                 Fiber.fork ~sw (fun () ->
                   Log.debug (fun f -> f "netif: read (%d)" (Cstruct.length buf));
-                  safe_apply fn buf)
+                  safe_apply fn buf;
+                  Netif_region.free chunk)
             | Error `Canceled -> raise Disconnected
             | Error `Disconnected ->
                 t.active <- false;
