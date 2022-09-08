@@ -102,7 +102,7 @@ let () =
   Ctf.Control.start trace_config;
 *)
   (* Eio_luv.run @@ fun env -> *)
-  Eio_linux.run ~queue_depth:2048 @@ fun env ->
+  Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
   let net = stack ~sw ~clock:env#clock "tap0" (Ipaddr.V4.Prefix.of_string_exn "10.0.0.3/24")
   in

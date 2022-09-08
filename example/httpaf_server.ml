@@ -74,7 +74,7 @@ let () =
   Ctf.Control.start trace_config;
 *)
   (* Eio_luv.run @@ fun env -> *)
-  Eio_linux.run ~queue_depth:2048 ~polling_timeout:2000 @@ fun env ->
+  Eio_main.run @@ fun env ->
   let n_domains =
     match Sys.getenv_opt "HTTPAF_EIO_DOMAINS" with
     | Some d -> int_of_string d
