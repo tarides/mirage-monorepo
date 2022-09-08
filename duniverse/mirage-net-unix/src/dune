@@ -1,6 +1,6 @@
 (library
  (name mirage_net_unix)
  (public_name mirage-net-unix)
- (libraries logs macaddr cstruct eio eio_linux mirage-net tuntap)
+ (libraries logs macaddr cstruct eio eio.unix mirage-net tuntap)
  (modules netif)
  (wrapped false))
