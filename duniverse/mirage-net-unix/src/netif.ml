@@ -160,3 +160,56 @@ let mac t = t.mac
 let mtu t = t.mtu
 let get_stats_counters t = t.stats
 let reset_stats_counters t = Mirage_net.Stats.reset t.stats
+
+(* Eio interop *)
+
+(* todo: don't allocate the same buffer ? *)
+let chunk_cs = Cstruct.create 10000
+
+let fallback_copy src flow = 
+  try
+    while true do
+      let got = Eio.Flow.read src chunk_cs in
+      writev flow [Cstruct.sub chunk_cs 0 got]
+    done
+  with End_of_file -> ()
+
+let copy_with_rsb rsb flow =
+  try
+    rsb @@ fun cstruct ->
+    writev flow cstruct;
+    Cstruct.lenv cstruct
+  with
+  | End_of_file -> ()
+
+let connect ~sw t : Mirage_net.t =
+  let v = connect ~sw t in
+  object (self: Mirage_net.t)
+    method copy (src : #Eio.Flow.source) =
+      let rec aux = function
+        | Eio.Flow.Read_source_buffer rsb :: _ -> copy_with_rsb rsb v
+        | _ :: xs -> aux xs
+        | [] -> fallback_copy src v
+      in
+      aux (Eio.Flow.read_methods src)
+
+    method read_into cstruct =
+      let cst = read v cstruct |> Result.get_ok in
+      Cstruct.length cst
+
+    method shutdown _ = ()
+
+    method probe _ = None
+
+    method read_methods = []
+
+    method get_stats_counters = get_stats_counters v
+
+    method mac = mac v
+
+    method mtu = mtu v
+
+    method reset_stats_counters  = reset_stats_counters v
+
+
+  end

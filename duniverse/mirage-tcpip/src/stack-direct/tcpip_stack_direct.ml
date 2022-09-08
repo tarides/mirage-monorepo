@@ -20,7 +20,6 @@ module Log = (val Logs.src_log src : Logs.LOG)
 
 module Make
     (Random : Mirage_random.S)
-    (Netif : Mirage_net.S)
     (Eth : Ethernet.S)
     (Arpv4 : Arp.S)
     (Ipv4 : Tcpip.Ip.S with type ipaddr = Ipaddr.V4.t)
@@ -33,7 +32,7 @@ struct
   module IPV4 = Ipv4
 
   type t = {
-    netif : Netif.t;
+    netif : Mirage_net.t;
     ethif : Eth.t;
     arpv4 : Arpv4.t;
     ipv4 : Ipv4.t;
@@ -53,8 +52,8 @@ struct
 
   let listen t =
     Log.debug (fun f -> f "Establishing or updating listener for stack %a" pp t);
-    let ethif_listener =
-      Eth.input ~arpv4:(Arpv4.input t.arpv4)
+    let rec ethif_listener () =
+      Eth.read ~arpv4:(Arpv4.input t.arpv4)
         ~ipv4:
           (Ipv4.input ~tcp:(Tcpv4.input t.tcpv4) ~udp:(Udpv4.input t.udpv4)
              ~default:(fun ~proto ~src ~dst buf ->
@@ -63,17 +62,22 @@ struct
                | _ -> ())
              t.ipv4)
         ~ipv6:(fun _ -> ())
-        t.ethif
+        t.ethif;
+      ethif_listener ()
     in
-    Netif.listen t.netif ~header_size:Ethernet.Packet.sizeof_ethernet
-      ethif_listener;
-    let nstat = Netif.get_stats_counters t.netif in
+    let listeners =
+      List.init 8 (fun _ () -> 
+        Eio.Switch.run @@ fun sw -> 
+        ethif_listener ()) 
+    in
+    Eio.Fiber.any listeners;
+    let nstat = t.netif#get_stats_counters in
     let open Mirage_net in
     Log.info (fun f ->
         f
           "listening loop of interface %s terminated regularly:@ %Lu bytes \
             (%lu packets) received, %Lu bytes (%lu packets) sent@ "
-          (Macaddr.to_string (Netif.mac t.netif))
+          (Macaddr.to_string (t.netif#mac))
           nstat.rx_bytes nstat.rx_pkts nstat.tx_bytes nstat.tx_pkts)
 
   let connect ~sw netif ethif arpv4 ipv4 icmpv4 udpv4 tcpv4 =
@@ -98,7 +102,6 @@ end
 
 module MakeV6
     (Random : Mirage_random.S)
-    (Netif : Mirage_net.S)
     (Eth : Ethernet.S)
     (Ipv6 : Tcpip.Ip.S with type ipaddr = Ipaddr.V6.t)
     (Udpv6 : Tcpip.Udp.S with type ipaddr = Ipaddr.V6.t)
@@ -109,7 +112,7 @@ struct
   module IP = Ipv6
 
   type t = {
-    netif : Netif.t;
+    netif : Mirage_net.t;
     ethif : Eth.t;
     ipv6 : Ipv6.t;
     udpv6 : Udpv6.t;
@@ -127,25 +130,30 @@ struct
 
   let listen t =
     Log.debug (fun f -> f "Establishing or updating listener for stack %a" pp t);
-    let ethif_listener =
-      Eth.input
+    let rec ethif_listener () =
+      Eth.read
         ~arpv4:(fun _ -> ())
         ~ipv4:(fun _ -> ())
         ~ipv6:
           (Ipv6.input ~tcp:(Tcpv6.input t.tcpv6) ~udp:(Udpv6.input t.udpv6)
              ~default:(fun ~proto:_ ~src:_ ~dst:_ _ -> ())
              t.ipv6)
-        t.ethif
+        t.ethif;
+      ethif_listener ()
     in
-    Netif.listen t.netif ~header_size:Ethernet.Packet.sizeof_ethernet
-      ethif_listener;
-    let nstat = Netif.get_stats_counters t.netif in
+    let listeners =
+      List.init 8 (fun _ () -> 
+        Eio.Switch.run @@ fun sw -> 
+        ethif_listener ()) 
+    in
+    Eio.Fiber.any listeners;
+    let nstat = t.netif#get_stats_counters in
     let open Mirage_net in
     Log.info (fun f ->
         f
           "listening loop of interface %s terminated regularly:@ %Lu bytes \
             (%lu packets) received, %Lu bytes (%lu packets) sent@ "
-          (Macaddr.to_string (Netif.mac t.netif))
+          (Macaddr.to_string (t.netif#mac))
           nstat.rx_bytes nstat.rx_pkts nstat.tx_bytes nstat.tx_pkts)
 
   let connect ~sw netif ethif ipv6 udpv6 tcpv6 =
@@ -274,7 +282,6 @@ end
 
 module MakeV4V6
     (Random : Mirage_random.S)
-    (Netif : Mirage_net.S)
     (Eth : Ethernet.S)
     (Arpv4 : Arp.S)
     (Ip : Tcpip.Ip.S with type ipaddr = Ipaddr.t)
@@ -287,7 +294,7 @@ struct
   module IP = Ip
 
   type t = {
-    netif : Netif.t;
+    netif : Mirage_net.t;
     ethif : Eth.t;
     arpv4 : Arpv4.t;
     icmpv4 : Icmpv4.t;
@@ -316,21 +323,26 @@ struct
       | 1, Ipaddr.V4 src, Ipaddr.V4 dst -> Icmpv4.input t.icmpv4 ~src ~dst buf
       | _ -> ()
     in
-    let ethif_listener buf =
-      Eth.input ~arpv4:(Arpv4.input t.arpv4)
+    let rec ethif_listener () =
+      Eth.read ~arpv4:(Arpv4.input t.arpv4)
         ~ipv4:(IP.input ~tcp ~udp ~default t.ip)
         ~ipv6:(IP.input ~tcp ~udp ~default t.ip)
-        t.ethif buf
+        t.ethif;
+      ethif_listener ()
     in
-    Netif.listen t.netif ~header_size:Ethernet.Packet.sizeof_ethernet
-      ethif_listener;
-    let nstat = Netif.get_stats_counters t.netif in
+    let listeners =
+      List.init 8 (fun _ () -> 
+        Eio.Switch.run @@ fun sw -> 
+        ethif_listener ()) 
+    in
+    Eio.Fiber.any listeners;
+    let nstat = t.netif#get_stats_counters in
     let open Mirage_net in
     Log.info (fun f ->
         f
           "listening loop of interface %s terminated regularly:@ %Lu bytes \
             (%lu packets) received, %Lu bytes (%lu packets) sent@ "
-          (Macaddr.to_string (Netif.mac t.netif))
+          (Macaddr.to_string (t.netif#mac))
           nstat.rx_bytes nstat.rx_pkts nstat.tx_bytes nstat.tx_pkts)
 
   let connect ~sw netif ethif arpv4 ip icmpv4 udp tcp =

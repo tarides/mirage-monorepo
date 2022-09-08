@@ -46,14 +46,10 @@ module Stats = struct
     t.tx_pkts <- 0l
 end
 
-module type S = sig
-  type t
-
-  val disconnect : t -> unit
-  val writev : t -> Cstruct.t list -> unit
-  val listen : t -> header_size:int -> (Cstruct.t -> unit) -> unit
-  val mac : t -> Macaddr.t
-  val mtu : t -> int
-  val get_stats_counters : t -> stats
-  val reset_stats_counters : t -> unit
-end
+type t = <
+  Eio.Flow.two_way;
+  mac : Macaddr.t;
+  mtu : int;
+  get_stats_counters : stats;
+  reset_stats_counters : unit;
+>

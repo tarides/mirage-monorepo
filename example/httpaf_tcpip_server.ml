@@ -64,21 +64,20 @@ let main ~net ~domain_mgr ~n_domains port backlog =
   run_domain ssock
 
 
-module V = Netif
-module E = Ethernet.Make (V)
+module E = Ethernet.Impl
 module A = Arp.Make (E)
 module Ip4 = Static_ipv4.Make (Mirage_random_test) (Mclock) (E) (A)
-module Ip6 = Ipv6.Make (V) (E) (Mirage_random_test) 
+module Ip6 = Ipv6.Make (E) (Mirage_random_test) 
 module Icmp4 = Icmpv4.Make (Ip4)
 module I = Tcpip_stack_direct.IPV4V6 (Ip4) (Ip6)
 module U = Udp.Make (I) (Mirage_random_test)
 module T = Tcp.Flow.Make (I) (Mclock) (Mirage_random_test)
 
-module Stack_direct = Tcpip_stack_direct.MakeV4V6 (Mirage_random_test) (Netif) (E) (A) (I) (Icmp4) (U) (T)
+module Stack_direct = Tcpip_stack_direct.MakeV4V6 (Mirage_random_test) (E) (A) (I) (Icmp4) (U) (T)
 module Stack = Tcpip_stack_eio.Make(Stack_direct)
 
 let stack ~sw ~clock backend cidr =
-  let v = V.connect ~sw backend in
+  let v = Netif.connect ~sw backend in
   let e = E.connect v in
   let a = A.connect ~sw ~clock e in
   let i4 = Ip4.connect ~cidr e a in
@@ -90,18 +89,17 @@ let stack ~sw ~clock backend cidr =
   Stack_direct.connect ~sw v e a i icmp u t
   |> Stack.net
 
-
 let () = 
-(*
-  Logs.(set_level (Some Debug));
+   Logs.(set_level (Some Warning));
   Logs.set_reporter (Logs_fmt.reporter ());
-*)
+ 
 (*
   let buffer = Ctf.Unix.mmap_buffer ~size:0x100000 "trace/trace.ctf" in
   let trace_config = Ctf.Control.make buffer in
   Ctf.Control.start trace_config;
 *)
   (* Eio_luv.run @@ fun env -> *)
+  (* Eio_unix.Ctf.with_tracing "trace.ctf" @@ fun () -> *)
   Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
   let net = stack ~sw ~clock:env#clock "tap0" (Ipaddr.V4.Prefix.of_string_exn "10.0.0.3/24")
