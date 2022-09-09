@@ -14,13 +14,12 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
-module Make (E : Ethernet.S)
-            (R : Mirage_random.S) : sig
+module Make (R : Mirage_random.S) : sig
   include Tcpip.Ip.S with type ipaddr = Ipaddr.V6.t
   val connect :
     ?no_init:bool ->
     ?handle_ra:bool ->
     ?cidr:Ndpv6.prefix ->
     ?gateway:ipaddr ->
-    clock:Eio.Time.clock -> sw:Eio.Switch.t -> Mirage_net.t -> E.t -> t
+    clock:Eio.Time.clock -> sw:Eio.Switch.t -> Ethernet.t -> t
 end

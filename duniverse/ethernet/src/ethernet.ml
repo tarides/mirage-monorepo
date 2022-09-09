@@ -35,29 +35,18 @@ end
 
 exception Exceeds_mtu
 
-module type S = sig
-  type t
+type ethernet_sink = < 
+  copy: ?src:Macaddr.t -> Macaddr.t -> Packet.proto -> Eio.Flow.source -> unit
+>
 
-  val disconnect : t -> unit
-
-  val writev :
-    t ->
-    ?src:Macaddr.t ->
-    Macaddr.t ->
-    Packet.proto ->
-    Cstruct.t list ->
-    unit
-
-  val mac : t -> Macaddr.t
-  val mtu : t -> int
-
-  val read :
-    arpv4:(Cstruct.t -> unit) ->
-    ipv4:(Cstruct.t -> unit) ->
-    ipv6:(Cstruct.t -> unit) ->
-    t ->
-    unit
-end
+type t = <
+  ethernet_sink;
+  arpv4: Eio.Flow.source;
+  ipv6: Eio.Flow.source;
+  ipv4: Eio.Flow.source;
+  mac: Macaddr.t;
+  mtu: int;
+>
 
 let src = Logs.Src.create "ethernet" ~doc:"Mirage Ethernet"
 
@@ -116,3 +105,113 @@ module Impl = struct
     Log.info (fun f ->
         f "Disconnected Ethernet interface %a" Macaddr.pp (mac t))
 end
+
+
+(* todo: don't allocate the same buffer ? *)
+let chunk_cs = Cstruct.create 10000
+
+let fallback_copy source flow ?src dst proto = 
+  try
+    while true do
+      let got = Eio.Flow.read source chunk_cs in
+      Impl.writev flow ?src dst proto [Cstruct.sub chunk_cs 0 got]
+    done
+  with End_of_file -> ()
+
+let copy_with_rsb rsb flow ?src dst proto =
+  try
+    rsb @@ fun cstruct ->
+    Impl.writev flow ?src dst proto cstruct;
+    Cstruct.lenv cstruct
+  with
+  | End_of_file -> ()
+
+
+let connect netif =
+  let v = Impl.connect netif in
+  
+  let arpv4_packet, arpv4_condition = 
+    ref None, Eio.Condition.create () 
+  in
+  let ipv4_packet, ipv4_condition = 
+    ref None, Eio.Condition.create ()
+  in
+  let ipv6_packet, ipv6_condition = 
+    ref None, Eio.Condition.create () 
+  in
+
+  let do_read () =
+    (* todo: multicore ? *)
+    Impl.read 
+      ~arpv4:(fun pkt -> 
+        arpv4_packet := Some pkt;
+        Eio.Condition.broadcast arpv4_condition)
+      ~ipv4:(fun pkt -> 
+        ipv4_packet := Some pkt;
+        Eio.Condition.broadcast ipv4_condition)
+      ~ipv6:(fun pkt -> 
+        ipv6_packet := Some pkt;
+        Eio.Condition.broadcast ipv6_condition)
+      v
+  in
+
+  let read ethertype =
+    let pkt, cnd = match ethertype with
+      | `ARP -> arpv4_packet, arpv4_condition
+      | `IPv4 -> ipv4_packet, ipv4_condition
+      | `IPv6 -> ipv6_packet, ipv6_condition
+    in
+    object (self: Eio.Flow.source)
+      method probe _ = None
+
+      method read_into cstruct =
+        let rec rd ()= 
+          match !pkt with
+          | None ->
+            Eio.Fiber.first 
+              (fun () -> Eio.Condition.await_no_mutex arpv4_condition)
+              (fun () -> do_read ());
+            rd ()
+          | Some v ->
+            let buf = v in
+            pkt := None;
+            buf
+        in
+        let buf = rd () in
+        let l = min (Cstruct.length buf) (Cstruct.length cstruct) in
+        Cstruct.blit buf 0 cstruct 0 l;
+        l
+
+      method read_methods = []
+    end
+
+  in
+  let arpv4 = read `ARP in
+  let ipv4 = read `IPv4 in
+  let ipv6 = read `IPv6
+  in
+  object (self: t)
+    method mac = Impl.mac v
+    method mtu = Impl.mtu v
+
+    method copy ?src dst proto (source : #Eio.Flow.source) =
+      let rec aux = function
+        | Eio.Flow.Read_source_buffer rsb :: _ -> 
+            copy_with_rsb rsb v ?src dst proto
+        | _ :: xs -> aux xs
+        | [] -> fallback_copy source v ?src dst proto
+      in
+      aux (Eio.Flow.read_methods source)
+
+    method arpv4 = arpv4
+
+    method ipv4 = ipv4
+
+    method ipv6 = ipv6
+  end
+
+  let copy t = t#copy
+
+  let mac t = t#mac
+  
+  let mtu t = t#mtu

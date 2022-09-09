@@ -92,10 +92,10 @@ let rec read t buf =
     | exception Unix.Unix_error (Unix.ENXIO, _, _) ->
         Log.err (fun m -> m "[read] device %s is down, stopping" t.id);
         Error `Disconnected
-    | exception exn ->
+    (* | exception exn ->
         Log.err (fun m ->
             m "[read] error: %s, continuing" (Printexc.to_string exn));
-        Error `Continue 
+        Error `Continue  *)
     in
     Eio.Private.Ctf.note_increase "net_read" (-1);
     v

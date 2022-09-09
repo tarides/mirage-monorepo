@@ -14,7 +14,7 @@ exception Local
 
 exception Gateway
 
-module Make(Log : Logs.LOG) (A : Arp.S) = struct
+module Make(Log : Logs.LOG) = struct
 
   let destination_mac network gateway arp = function
     |ip when Ipaddr.V4.(compare ip broadcast) = 0
@@ -25,7 +25,7 @@ module Make(Log : Logs.LOG) (A : Arp.S) = struct
       mac_of_multicast ip
     |ip when Ipaddr.V4.Prefix.mem ip network -> (* Local *)
       begin
-      match A.query arp ip with
+      match Arp.query arp ip with
       | mac -> mac
       | exception Arp.Timeout ->
         Log.info (fun f ->
@@ -45,7 +45,7 @@ module Make(Log : Logs.LOG) (A : Arp.S) = struct
               Ipaddr.V4.pp ip);
         raise Gateway
       | Some gateway ->
-        match A.query arp gateway with
+        match Arp.query arp gateway with
         | mac -> mac
         | exception Arp.Timeout ->
           Log.info (fun f ->

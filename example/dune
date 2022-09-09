@@ -24,4 +24,5 @@
   mirage-net-unix
   mirage-clock-unix
   mirage-random-test
+  logs.fmt
   eio_main))

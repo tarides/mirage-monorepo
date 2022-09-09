@@ -17,8 +17,8 @@
 let src = Logs.Src.create "ipv4" ~doc:"Mirage IPv4"
 module Log = (val Logs.src_log src : Logs.LOG)
 
-module Make (R: Mirage_random.S) (C: Mirage_clock.MCLOCK) (Ethernet: Ethernet.S) (Arpv4 : Arp.S) = struct
-  module Routes = Routing.Make(Log)(Arpv4)
+module Make (R: Mirage_random.S) (C: Mirage_clock.MCLOCK) = struct
+  module Routes = Routing.Make(Log)
 
   type ipaddr = Ipaddr.V4.t
   type callback = src:ipaddr -> dst:ipaddr -> Cstruct.t -> unit
@@ -27,7 +27,7 @@ module Make (R: Mirage_random.S) (C: Mirage_clock.MCLOCK) (Ethernet: Ethernet.S)
 
   type t = {
     ethif : Ethernet.t;
-    arp : Arpv4.t;
+    arp : Arp.t;
     cidr: Ipaddr.V4.Prefix.t;
     gateway: Ipaddr.V4.t option;
     mutable cache: Fragments.Cache.t;
@@ -106,12 +106,13 @@ module Make (R: Mirage_random.S) (C: Mirage_clock.MCLOCK) (Ethernet: Ethernet.S)
           let header = Ipv4_packet.Marshal.make_cstruct ~payload_len hdr  in
           header::headerf_buf::payload_first_frame
         in
-        Ethernet.writev t.ethif mac `IPv4 iovec;
+        Ethernet.copy t.ethif mac `IPv4 (Eio.Flow.cstruct_source iovec);
         if not multiple then
           ()
         else
           let remaining = Fragments.fragment ~mtu hdr !leftover in
-          List.iter (Ethernet.writev t.ethif mac `IPv4) remaining
+          List.iter (fun srcs -> 
+            Ethernet.copy t.ethif mac `IPv4 (Eio.Flow.cstruct_source srcs)) remaining
 
   let input t ~tcp ~udp ~default buf =
     match Ipv4_packet.Unmarshal.of_cstruct buf with
@@ -147,7 +148,7 @@ module Make (R: Mirage_random.S) (C: Mirage_clock.MCLOCK) (Ethernet: Ethernet.S)
     (if no_init then
        ()
      else
-       Arpv4.set_ips arp [Ipaddr.V4.Prefix.address cidr]);
+       arp#set_ips [Ipaddr.V4.Prefix.address cidr]);
     let cache = Fragments.Cache.empty fragment_cache_size in
     { ethif; arp; cidr; gateway; cache }
 

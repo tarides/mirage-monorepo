@@ -22,7 +22,7 @@ exception Timeout
 
 (** Address resolution protocol, translating network addresses (e.g. IPv4)
     into link layer addresses (MAC). *)
-module type S = sig
+(* module type S = sig
   type t
   (** The type representing the internal state of the ARP layer. *)
 
@@ -59,11 +59,18 @@ module type S = sig
       it will update its cache, otherwise will try to satisfy the
       request. *)
   val input : t -> Cstruct.t -> unit
-end
+end *)
 
+type t = <
+    pp: unit Fmt.t;
+    get_ips: Ipaddr.V4.t list;
+    set_ips: Ipaddr.V4.t list -> unit;
+    remove_ip: Ipaddr.V4.t -> unit;
+    add_ip: Ipaddr.V4.t -> unit;
+    query: Ipaddr.V4.t -> Macaddr.t;
+    Eio.Flow.sink;
+>
 
-module Make (Ethernet : Ethernet.S) : sig
-  include S
+val query : < query: Ipaddr.V4.t -> Macaddr.t; ..> -> Ipaddr.V4.t -> Macaddr.t
 
-  val connect : sw:Eio.Switch.t -> clock:Eio.Time.clock -> Ethernet.t -> t
-end
+val connect : sw:Eio.Switch.t -> clock:Eio.Time.clock -> Ethernet.t -> t

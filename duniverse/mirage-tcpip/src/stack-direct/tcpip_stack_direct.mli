@@ -14,47 +14,6 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
-module Make
-    (Random   : Mirage_random.S)
-    (Ethernet : Ethernet.S)
-    (Arpv4    : Arp.S)
-    (Ipv4     : Tcpip.Ip.S with type ipaddr = Ipaddr.V4.t)
-    (Icmpv4   : Icmpv4.S)
-    (Udpv4    : Tcpip.Udp.S with type ipaddr = Ipaddr.V4.t)
-    (Tcpv4    : Tcpip.Tcp.S with type ipaddr = Ipaddr.V4.t) : sig
-  include Tcpip.Stack.V4
-    with module IPV4 = Ipv4
-     and module TCPV4 = Tcpv4
-     and module UDPV4 = Udpv4
-
-  val connect : sw:Eio.Switch.t -> Mirage_net.t -> Ethernet.t -> Arpv4.t -> Ipv4.t -> Icmpv4.t ->
-    Udpv4.t -> Tcpv4.t -> t
-  (** [connect] assembles the arguments into a network stack, then calls
-      `listen` on the assembled stack before returning it to the caller.  The
-      initial `listen` functions to ensure that the lower-level layers (e.g.
-      ARP) are functioning, so that if the user wishes to establish outbound
-      connections, they will be able to do so. *)
-end
-
-module MakeV6
-    (Random   : Mirage_random.S)
-    (Ethernet : Ethernet.S)
-    (Ipv6     : Tcpip.Ip.S with type ipaddr = Ipaddr.V6.t)
-    (Udpv6    : Tcpip.Udp.S with type ipaddr = Ipaddr.V6.t)
-    (Tcpv6    : Tcpip.Tcp.S with type ipaddr = Ipaddr.V6.t) : sig
-  include Tcpip.Stack.V6
-    with module IP = Ipv6
-     and module TCP = Tcpv6
-     and module UDP = Udpv6
-
-  val connect : sw:Eio.Switch.t -> Mirage_net.t -> Ethernet.t -> Ipv6.t -> Udpv6.t -> Tcpv6.t -> t
-  (** [connect] assembles the arguments into a network stack, then calls
-      `listen` on the assembled stack before returning it to the caller.  The
-      initial `listen` functions to ensure that the lower-level layers are
-      functioning, so that if the user wishes to establish outbound connections,
-      they will be able to do so. *)
-end
-
 module IPV4V6 (Ipv4 : Tcpip.Ip.S with type ipaddr = Ipaddr.V4.t) (Ipv6 : Tcpip.Ip.S with type ipaddr = Ipaddr.V6.t) : sig
   include Tcpip.Ip.S with type ipaddr = Ipaddr.t
 
@@ -63,8 +22,6 @@ end
 
 module MakeV4V6
     (Random   : Mirage_random.S)
-    (Ethernet : Ethernet.S)
-    (Arpv4    : Arp.S)
     (Ip       : Tcpip.Ip.S with type ipaddr = Ipaddr.t)
     (Icmpv4   : Icmpv4.S)
     (Udp      : Tcpip.Udp.S with type ipaddr = Ipaddr.t)
@@ -74,7 +31,7 @@ module MakeV4V6
      and module TCP = Tcp
      and module UDP = Udp
 
-  val connect : sw:Eio.Switch.t -> Mirage_net.t -> Ethernet.t -> Arpv4.t -> Ip.t -> Icmpv4.t -> Udp.t -> Tcp.t -> t
+  val connect : sw:Eio.Switch.t -> Mirage_net.t -> Ethernet.t -> Arp.t -> Ip.t -> Icmpv4.t -> Udp.t -> Tcp.t -> t
   (** [connect] assembles the arguments into a network stack, then calls
       `listen` on the assembled stack before returning it to the caller.  The
       initial `listen` functions to ensure that the lower-level layers are

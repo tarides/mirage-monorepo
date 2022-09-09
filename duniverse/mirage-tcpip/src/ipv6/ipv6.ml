@@ -21,7 +21,6 @@ module I = Ipaddr
 module Lwt = struct end
 
 module Make
-    (E : Ethernet.S)
     (R : Mirage_random.S) =
 struct
   type ipaddr = Ipaddr.V6.t
@@ -29,13 +28,13 @@ struct
 
   let pp_ipaddr = Ipaddr.V6.pp
 
-  type t = { ethif : E.t; clock : Eio.Time.clock; mutable ctx : Ndpv6.context }
+  type t = { ethif : Ethernet.t; clock : Eio.Time.clock; mutable ctx : Ndpv6.context }
 
   let output t (dst, size, fillf) =
     let buffer = Cstruct.create size in
     let size = fillf buffer in
     let buffer = Cstruct.sub buffer 0 size in
-    E.writev t.ethif dst `IPv6 [ buffer ]
+    Ethernet.copy t.ethif dst `IPv6 (Eio.Flow.cstruct_source [ buffer ])
 
   let output_ign t a = output t a |> ignore
 
@@ -58,7 +57,7 @@ struct
     in
     loop (Some u)
 
-  let mtu t ~dst:_ = E.mtu t.ethif - Ipv6_wire.sizeof_ipv6
+  let mtu t ~dst:_ = Ethernet.mtu t.ethif - Ipv6_wire.sizeof_ipv6
 
   let write t ?fragment:_ ?ttl:_ ?src dst proto ?(size = 0) headerf bufs =
     let now = Eio.Time.now t.clock |> Duration.of_f in
@@ -112,11 +111,11 @@ struct
     ph
 
   let connect ?(no_init = false) ?(handle_ra = true) ?cidr ?gateway ~clock ~sw
-      netif ethif =
+     ethif =
     Log.info (fun f -> f "IP6: Starting");
     let now = Eio.Time.now clock |> Duration.of_f in
     let ctx, outs =
-      Ndpv6.local ~handle_ra ~now ~random:R.generate (E.mac ethif)
+      Ndpv6.local ~handle_ra ~now ~random:R.generate (Ethernet.mac ethif)
     in
     let ctx, outs =
       match cidr with
@@ -138,13 +137,13 @@ struct
       Eio.Fiber.fork ~sw (fun () ->
         Eio.Private.Ctf.label "ipv6.connect.tick"; 
         start_ticking t u);
+      let buffer = Cstruct.create (Ethernet.mtu ethif) in
       (* call listen until we're good in respect to DAD *)
       let rec ethif_listener ()=
         let noop ~src:_ ~dst:_ _ = () in
-        E.read ethif
-          ~arpv4:(fun _ -> ())
-          ~ipv4:(fun _ -> ())
-          ~ipv6:(input t ~tcp:noop ~udp:noop ~default:(fun ~proto:_ -> noop));
+        let size = Eio.Flow.read ethif#ipv6 buffer in
+        input t ~tcp:noop ~udp:noop ~default:(fun ~proto:_ -> noop) 
+          (Cstruct.sub buffer 0 size);
         ethif_listener ()
       in
       Eio.Fiber.any

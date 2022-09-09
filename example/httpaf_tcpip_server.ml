@@ -64,24 +64,22 @@ let main ~net ~domain_mgr ~n_domains port backlog =
   run_domain ssock
 
 
-module E = Ethernet.Impl
-module A = Arp.Make (E)
-module Ip4 = Static_ipv4.Make (Mirage_random_test) (Mclock) (E) (A)
-module Ip6 = Ipv6.Make (E) (Mirage_random_test) 
+module Ip4 = Static_ipv4.Make (Mirage_random_test) (Mclock)
+module Ip6 = Ipv6.Make (Mirage_random_test) 
 module Icmp4 = Icmpv4.Make (Ip4)
 module I = Tcpip_stack_direct.IPV4V6 (Ip4) (Ip6)
 module U = Udp.Make (I) (Mirage_random_test)
 module T = Tcp.Flow.Make (I) (Mclock) (Mirage_random_test)
 
-module Stack_direct = Tcpip_stack_direct.MakeV4V6 (Mirage_random_test) (E) (A) (I) (Icmp4) (U) (T)
+module Stack_direct = Tcpip_stack_direct.MakeV4V6 (Mirage_random_test) (I) (Icmp4) (U) (T)
 module Stack = Tcpip_stack_eio.Make(Stack_direct)
 
 let stack ~sw ~clock backend cidr =
   let v = Netif.connect ~sw backend in
-  let e = E.connect v in
-  let a = A.connect ~sw ~clock e in
+  let e = Ethernet.connect v in
+  let a = Arp.connect ~sw ~clock e in
   let i4 = Ip4.connect ~cidr e a in
-  let i6 = Ip6.connect ~sw ~clock ~no_init:true v e in
+  let i6 = Ip6.connect ~sw ~clock ~no_init:true e in
   let i = I.connect ~ipv4_only:false ~ipv6_only:false i4 i6 in
   let u = U.connect i in
   let t = T.connect ~sw ~clock i in

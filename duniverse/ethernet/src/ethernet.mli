@@ -56,47 +56,28 @@ end
 
 exception Exceeds_mtu  (** The type for ethernet interface errors. *)
 
-module type S = sig
-  type t
-  (** The type representing the internal state of the ethernet layer. *)
+type ethernet_sink = < 
+  copy: ?src:Macaddr.t -> Macaddr.t -> Packet.proto -> Eio.Flow.source -> unit
+>
 
-  val disconnect : t -> unit
-  (** Disconnect from the ethernet layer. While this might take some time to
-      complete, it can never result in an error. *)
-
-  val writev :
-    t ->
-    ?src:Macaddr.t ->
-    Macaddr.t ->
-    Packet.proto ->
-    Cstruct.t list ->
-    unit
-  (** [write eth ~src dst proto ~size payload] outputs an ethernet frame which
-     header is filled by [eth], and its payload is the buffer from the call to
-     [payload]. [Payload] gets a buffer of [size] (defaults to mtu) to fill with
-     their payload. If [size] exceeds {!mtu}, an error is returned. *)
-
-  val mac : t -> Macaddr.t
+type t = <
+  ethernet_sink;
+  arpv4: Eio.Flow.source;
+  ipv6: Eio.Flow.source;
+  ipv4: Eio.Flow.source;
+  mac: Macaddr.t;
   (** [mac eth] is the MAC address of [eth]. *)
-
-  val mtu : t -> int
+  mtu: int;
   (** [mtu eth] is the Maximum Transmission Unit of the [eth] i.e. the maximum
       size of the payload, excluding the ethernet frame header. *)
+>
 
-  val read :
-    arpv4:(Cstruct.t -> unit) ->
-    ipv4:(Cstruct.t -> unit) ->
-    ipv6:(Cstruct.t -> unit) ->
-    t ->
-    unit
-  (** [input ~arpv4 ~ipv4 ~ipv6 eth buffer] decodes the buffer and demultiplexes
-      it depending on the protocol to the callback. *)
-end
+val copy : < ethernet_sink; .. > -> ?src:Macaddr.t -> Macaddr.t -> Packet.proto -> Eio.Flow.source -> unit
 
-module Impl : sig
-  include S
+val mtu : < mtu: int; .. > -> int
 
-  val connect : Mirage_net.t -> t
-  (** [connect netif] connects an ethernet layer on top of the raw
-      network device [netif]. *)
-end
+val mac : < mac: Macaddr.t; .. > -> Macaddr.t
+
+val connect : Mirage_net.t -> t
+(** [connect netif] connects an ethernet layer on top of the raw
+    network device [netif]. *)

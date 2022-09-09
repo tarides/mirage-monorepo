@@ -18,164 +18,6 @@ let src = Logs.Src.create "tcpip-stack-direct" ~doc:"Pure OCaml TCP/IP stack"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
-module Make
-    (Random : Mirage_random.S)
-    (Eth : Ethernet.S)
-    (Arpv4 : Arp.S)
-    (Ipv4 : Tcpip.Ip.S with type ipaddr = Ipaddr.V4.t)
-    (Icmpv4 : Icmpv4.S)
-    (Udpv4 : Tcpip.Udp.S with type ipaddr = Ipaddr.V4.t)
-    (Tcpv4 : Tcpip.Tcp.S with type ipaddr = Ipaddr.V4.t) =
-struct
-  module UDPV4 = Udpv4
-  module TCPV4 = Tcpv4
-  module IPV4 = Ipv4
-
-  type t = {
-    netif : Mirage_net.t;
-    ethif : Eth.t;
-    arpv4 : Arpv4.t;
-    ipv4 : Ipv4.t;
-    icmpv4 : Icmpv4.t;
-    udpv4 : Udpv4.t;
-    tcpv4 : Tcpv4.t;
-    cancel : unit Eio.Promise.u;
-  }
-
-  let pp fmt t =
-    Format.fprintf fmt "mac=%a,ip=%a" Macaddr.pp (Eth.mac t.ethif)
-      (Fmt.list Ipaddr.V4.pp) (Ipv4.get_ip t.ipv4)
-
-  let tcpv4 { tcpv4; _ } = tcpv4
-  let udpv4 { udpv4; _ } = udpv4
-  let ipv4 { ipv4; _ } = ipv4
-
-  let listen t =
-    Log.debug (fun f -> f "Establishing or updating listener for stack %a" pp t);
-    let rec ethif_listener () =
-      Eth.read ~arpv4:(Arpv4.input t.arpv4)
-        ~ipv4:
-          (Ipv4.input ~tcp:(Tcpv4.input t.tcpv4) ~udp:(Udpv4.input t.udpv4)
-             ~default:(fun ~proto ~src ~dst buf ->
-               match proto with
-               | 1 -> Icmpv4.input t.icmpv4 ~src ~dst buf
-               | _ -> ())
-             t.ipv4)
-        ~ipv6:(fun _ -> ())
-        t.ethif;
-      ethif_listener ()
-    in
-    let listeners =
-      List.init 8 (fun _ () -> 
-        Eio.Switch.run @@ fun sw -> 
-        ethif_listener ()) 
-    in
-    Eio.Fiber.any listeners;
-    let nstat = t.netif#get_stats_counters in
-    let open Mirage_net in
-    Log.info (fun f ->
-        f
-          "listening loop of interface %s terminated regularly:@ %Lu bytes \
-            (%lu packets) received, %Lu bytes (%lu packets) sent@ "
-          (Macaddr.to_string (t.netif#mac))
-          nstat.rx_bytes nstat.rx_pkts nstat.tx_bytes nstat.tx_pkts)
-
-  let connect ~sw netif ethif arpv4 ipv4 icmpv4 udpv4 tcpv4 =
-    let cancel_promise, cancel = Eio.Promise.create ~label:"tcpip.stack-direct.connect" () in
-    let t = { netif; ethif; arpv4; ipv4; icmpv4; tcpv4; udpv4; cancel } in
-    Log.info (fun f -> f "stack assembled: %a" pp t);
-    Eio.Fiber.fork ~sw (fun () ->
-        Eio.Private.Ctf.label "tcpip.stack-direct.listen";
-        Eio.Fiber.first
-          (fun () -> 
-            Eio.Private.Ctf.label "tcpip.stack-direct.listen~network";
-            listen t)
-          (fun () -> 
-            Eio.Private.Ctf.label "tcpip.stack-direct.listen~cancel";
-            Eio.Promise.await cancel_promise));
-    t
-
-  let disconnect t =
-    Log.info (fun f -> f "disconnect called: %a" pp t);
-    Eio.Promise.resolve t.cancel ()
-end
-
-module MakeV6
-    (Random : Mirage_random.S)
-    (Eth : Ethernet.S)
-    (Ipv6 : Tcpip.Ip.S with type ipaddr = Ipaddr.V6.t)
-    (Udpv6 : Tcpip.Udp.S with type ipaddr = Ipaddr.V6.t)
-    (Tcpv6 : Tcpip.Tcp.S with type ipaddr = Ipaddr.V6.t) =
-struct
-  module UDP = Udpv6
-  module TCP = Tcpv6
-  module IP = Ipv6
-
-  type t = {
-    netif : Mirage_net.t;
-    ethif : Eth.t;
-    ipv6 : Ipv6.t;
-    udpv6 : Udpv6.t;
-    tcpv6 : Tcpv6.t;
-    cancel : unit Eio.Promise.u;
-  }
-
-  let pp fmt t =
-    Format.fprintf fmt "mac=%a,ip=%a" Macaddr.pp (Eth.mac t.ethif)
-      (Fmt.list Ipaddr.V6.pp) (Ipv6.get_ip t.ipv6)
-
-  let tcp { tcpv6; _ } = tcpv6
-  let udp { udpv6; _ } = udpv6
-  let ip { ipv6; _ } = ipv6
-
-  let listen t =
-    Log.debug (fun f -> f "Establishing or updating listener for stack %a" pp t);
-    let rec ethif_listener () =
-      Eth.read
-        ~arpv4:(fun _ -> ())
-        ~ipv4:(fun _ -> ())
-        ~ipv6:
-          (Ipv6.input ~tcp:(Tcpv6.input t.tcpv6) ~udp:(Udpv6.input t.udpv6)
-             ~default:(fun ~proto:_ ~src:_ ~dst:_ _ -> ())
-             t.ipv6)
-        t.ethif;
-      ethif_listener ()
-    in
-    let listeners =
-      List.init 8 (fun _ () -> 
-        Eio.Switch.run @@ fun sw -> 
-        ethif_listener ()) 
-    in
-    Eio.Fiber.any listeners;
-    let nstat = t.netif#get_stats_counters in
-    let open Mirage_net in
-    Log.info (fun f ->
-        f
-          "listening loop of interface %s terminated regularly:@ %Lu bytes \
-            (%lu packets) received, %Lu bytes (%lu packets) sent@ "
-          (Macaddr.to_string (t.netif#mac))
-          nstat.rx_bytes nstat.rx_pkts nstat.tx_bytes nstat.tx_pkts)
-
-  let connect ~sw netif ethif ipv6 udpv6 tcpv6 =
-    let cancel_promise, cancel = Eio.Promise.create ~label:"tcpip.stack-direct.connect" () in
-    let t = { netif; ethif; ipv6; tcpv6; udpv6; cancel } in
-    Log.info (fun f -> f "stack assembled: %a" pp t);
-    Eio.Fiber.fork ~sw (fun () ->
-        Eio.Private.Ctf.label "tcpip.stack-direct.listen";
-        Eio.Fiber.first
-          (fun () -> 
-            Eio.Private.Ctf.label "tcpip.stack-direct.listen~network";
-            listen t)
-          (fun () -> 
-            Eio.Private.Ctf.label "tcpip.stack-direct.listen~cancel";
-            Eio.Promise.await cancel_promise));
-    t
-
-  let disconnect t =
-    Log.info (fun f -> f "disconnect called: %a" pp t);
-    Eio.Promise.resolve t.cancel ()
-end
-
 module IPV4V6
     (Ipv4 : Tcpip.Ip.S with type ipaddr = Ipaddr.V4.t)
     (Ipv6 : Tcpip.Ip.S with type ipaddr = Ipaddr.V6.t) =
@@ -282,8 +124,6 @@ end
 
 module MakeV4V6
     (Random : Mirage_random.S)
-    (Eth : Ethernet.S)
-    (Arpv4 : Arp.S)
     (Ip : Tcpip.Ip.S with type ipaddr = Ipaddr.t)
     (Icmpv4 : Icmpv4.S)
     (Udp : Tcpip.Udp.S with type ipaddr = Ipaddr.t)
@@ -295,8 +135,8 @@ struct
 
   type t = {
     netif : Mirage_net.t;
-    ethif : Eth.t;
-    arpv4 : Arpv4.t;
+    ethif : Ethernet.t;
+    arpv4 : Arp.t;
     icmpv4 : Icmpv4.t;
     ip : IP.t;
     udp : Udp.t;
@@ -305,7 +145,7 @@ struct
   }
 
   let pp fmt t =
-    Format.fprintf fmt "mac=%a,ip=%a" Macaddr.pp (Eth.mac t.ethif)
+    Format.fprintf fmt "mac=%a,ip=%a" Macaddr.pp (Ethernet.mac t.ethif)
       (Fmt.list Ipaddr.pp) (IP.get_ip t.ip)
 
   let tcp { tcp; _ } = tcp
@@ -323,17 +163,31 @@ struct
       | 1, Ipaddr.V4 src, Ipaddr.V4 dst -> Icmpv4.input t.icmpv4 ~src ~dst buf
       | _ -> ()
     in
-    let rec ethif_listener () =
-      Eth.read ~arpv4:(Arpv4.input t.arpv4)
-        ~ipv4:(IP.input ~tcp ~udp ~default t.ip)
-        ~ipv6:(IP.input ~tcp ~udp ~default t.ip)
-        t.ethif;
-      ethif_listener ()
+    let ipv4_listen () =
+      let ipv4_buffer = Cstruct.create (Ethernet.mtu t.ethif) in
+      while true do
+        let sz = Eio.Flow.read t.ethif#ipv4 ipv4_buffer in
+        IP.input ~tcp ~udp ~default t.ip (Cstruct.sub ipv4_buffer 0 sz)
+      done
+    in
+    let ipv6_listen () =
+      let ipv6_buffer = Cstruct.create (Ethernet.mtu t.ethif) in
+      while true do
+        let sz = Eio.Flow.read t.ethif#ipv6 ipv6_buffer in
+        IP.input ~tcp ~udp ~default t.ip (Cstruct.sub ipv6_buffer 0 sz)
+      done
+    in
+    let arp_listen () =
+      Eio.Flow.copy t.ethif#arpv4 t.arpv4
     in
     let listeners =
-      List.init 8 (fun _ () -> 
+      List.init 4 (fun _ () -> 
         Eio.Switch.run @@ fun sw -> 
-        ethif_listener ()) 
+        Eio.Fiber.all [
+          ipv4_listen;
+          ipv6_listen;
+          arp_listen
+        ]) 
     in
     Eio.Fiber.any listeners;
     let nstat = t.netif#get_stats_counters in
