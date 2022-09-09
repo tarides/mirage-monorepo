@@ -17,10 +17,5 @@
 
 (** Implementation of the network interface for Unix backends. *)
 
-include Mirage_net.S
-
-val connect : sw:Eio.Std.Switch.t -> string -> t
+val connect : sw:Eio.Std.Switch.t -> string -> Mirage_net.t
 (** [connect tap] connects to the given tap interface. *)
-
-val fd : t -> Eio_linux.FD.t
-(** [fd t] is [t]'s underneath file descriptor. *)

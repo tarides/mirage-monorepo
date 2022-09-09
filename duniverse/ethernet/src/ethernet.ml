@@ -51,12 +51,11 @@ module type S = sig
   val mac : t -> Macaddr.t
   val mtu : t -> int
 
-  val input :
+  val read :
     arpv4:(Cstruct.t -> unit) ->
     ipv4:(Cstruct.t -> unit) ->
     ipv6:(Cstruct.t -> unit) ->
     t ->
-    Cstruct.t ->
     unit
 end
 
@@ -64,15 +63,17 @@ let src = Logs.Src.create "ethernet" ~doc:"Mirage Ethernet"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
-module Make (Netif : Mirage_net.S) = struct
-  type t = { netif : Netif.t; }
+module Impl = struct
+  type t = { netif : Mirage_net.t; }
 
-  let mac t = Netif.mac t.netif
-  let mtu t = Netif.mtu t.netif (* interface MTU excludes Ethernet header *)
+  let mac t = t.netif#mac
+  let mtu t = t.netif#mtu (* interface MTU excludes Ethernet header *)
 
-  let input ~arpv4 ~ipv4 ~ipv6 t frame =
+  let read ~arpv4 ~ipv4 ~ipv6 t =
     let open Ethernet_packet in
     MProf.Trace.label "ethernet.input";
+    let frame = Cstruct.create (mtu t) in
+    let _ = Eio.Flow.read t.netif frame in
     let of_interest dest =
       Macaddr.compare dest (mac t) = 0 || not (Macaddr.is_unicast dest)
     in
@@ -102,7 +103,8 @@ module Make (Netif : Mirage_net.S) = struct
                 buffer"
               msg);
         failwith "todo"
-    | Ok () -> Netif.writev t.netif (header_buffer::payload)
+    | Ok () -> 
+      Eio.Flow.copy (Eio.Flow.cstruct_source (header_buffer::payload)) t.netif 
 
   let connect netif =
     MProf.Trace.label "ethernet.connect";

@@ -37,46 +37,13 @@ type stats = {
 
 (** {2 Networking} *)
 
-(** A network interface that serves Ethernet frames. *)
-module type S = sig
-  type t
-  (** The type representing the internal state of the network device. *)
-
-  val disconnect : t -> unit
-  (** Disconnect from the network device. While this might take some time to
-      complete, it can never result in an error. *)
-
-  val writev : t -> Cstruct.t list -> unit
-  (** [write net ~size fill] allocates a buffer of length [size], where [size]
-     must not exceed the interface maximum packet size ({!mtu} plus Ethernet
-     header). The allocated buffer is zeroed and passed to the [fill] function
-     which returns the payload length, which may not exceed the length of the
-     buffer. When [fill] returns, a sub buffer is put on the wire: the allocated
-     buffer from index 0 to the returned length.
-     
-     Can raise Invalid_length *)
-
-  val listen : t -> header_size:int -> (Cstruct.t -> unit) -> unit
-  (** [listen ~header_size net fn] waits for a [packet] with size at most
-     [header_size + mtu] on the network device. When a [packet] is received, an
-     asynchronous task is created in which [fn packet] is called. The ownership
-     of [packet] is transferred to [fn].  The function can be stopped by calling
-     {!disconnect}. *)
-
-  val mac : t -> Macaddr.t
-  (** [mac net] is the MAC address of [net]. *)
-
-  val mtu : t -> int
-  (** [mtu net] is the Maximum Transmission Unit of [net]. This excludes the
-     Ethernet header. *)
-
-  val get_stats_counters : t -> stats
-  (** Obtain the most recent snapshot of the interface statistics. *)
-
-  val reset_stats_counters : t -> unit
-  (** Reset the statistics associated with this interface to their
-      defaults. *)
-end
+type t = <
+  Eio.Flow.two_way;
+  mac : Macaddr.t;
+  mtu : int;
+  get_stats_counters : stats;
+  reset_stats_counters : unit;
+>
 
 module Stats : sig
   val create : unit -> stats

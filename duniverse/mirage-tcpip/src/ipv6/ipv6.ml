@@ -21,7 +21,6 @@ module I = Ipaddr
 module Lwt = struct end
 
 module Make
-    (N : Mirage_net.S)
     (E : Ethernet.S)
     (R : Mirage_random.S) =
 struct
@@ -140,22 +139,20 @@ struct
         Eio.Private.Ctf.label "ipv6.connect.tick"; 
         start_ticking t u);
       (* call listen until we're good in respect to DAD *)
-      let ethif_listener =
+      let rec ethif_listener ()=
         let noop ~src:_ ~dst:_ _ = () in
-        E.input ethif
+        E.read ethif
           ~arpv4:(fun _ -> ())
           ~ipv4:(fun _ -> ())
-          ~ipv6:(input t ~tcp:noop ~udp:noop ~default:(fun ~proto:_ -> noop))
+          ~ipv6:(input t ~tcp:noop ~udp:noop ~default:(fun ~proto:_ -> noop));
+        ethif_listener ()
       in
       Eio.Fiber.any
         [
           (* MCP: replace this error swallowing with proper propagation *)
           (fun () ->
             List.iter (output_ign t) outs |> fun () -> Eio.Promise.await task);
-          (fun () ->
-            N.listen netif ~header_size:Ethernet.Packet.sizeof_ethernet
-              ethif_listener
-            |> fun _ -> ());
+          (fun () -> ethif_listener ());
           (fun () -> Eio.Time.sleep clock 3.);
         ];
       let expected_ips = match cidr with None -> 1 | Some _ -> 2 in

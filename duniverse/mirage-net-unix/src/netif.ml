@@ -22,13 +22,12 @@ module Log = (val Logs.src_log src : Logs.LOG)
 
 type t = {
   id : string;
-  dev : Eio_linux.FD.t;
+  dev : Eio_unix.socket;
   mutable active : bool;
   mac : Macaddr.t;
   mtu : int;
   stats : Mirage_net.stats;
-  output_buffer : Cstruct.t;
-  output_region : Uring.Region.t;
+  read_buffer : Netif_region.t;
 }
 
 let fd t = t.dev
@@ -45,7 +44,7 @@ let connect ~sw devname =
   try
     Random.self_init ();
     let fd, devname = Tuntap.opentap ~pi:false ~devname () in
-    let dev = Eio_linux.FD.of_unix ~sw ~seekable:false ~close_unix:false fd in
+    let dev = Eio_unix.FD.as_socket ~sw ~close_unix:true fd in
     let mac = Macaddr.make_local (fun _ -> Random.int 256) in
     Tuntap.set_up_and_running devname;
     let mtu = Tuntap.get_mtu devname in
@@ -54,7 +53,9 @@ let connect ~sw devname =
     let active = true in
     let stats = Mirage_net.Stats.create () in
     let slots = 64 in
-    let output_buffer = Cstruct.create (mtu * slots) in
+    let size = mtu + 18 (* TODO *) in
+    let buffer = Cstruct.create (size * slots) in
+    let read_buffer = Netif_region.init ~block_size:size buffer.buffer slots in
     let t =
       {
         id = devname;
@@ -63,9 +64,7 @@ let connect ~sw devname =
         mac;
         mtu;
         stats;
-        output_buffer;
-        output_region =
-          Uring.Region.init ~block_size:mtu output_buffer.buffer slots;
+        read_buffer;
       }
     in
     Log.info (fun m -> m "connect %s with mac %a" devname Macaddr.pp mac);
@@ -78,31 +77,31 @@ let connect ~sw devname =
 let disconnect t =
   Log.info (fun m -> m "disconnect %s" t.id);
   t.active <- false;
-  Eio_linux.FD.close t.dev
+  Eio.Flow.close t.dev
 
 (* Input a frame, and block if nothing is available *)
-let rec read ~upto t buf =
+let rec read t buf =
   let process () =
     Eio.Private.Ctf.note_increase "net_read" 1;
-    let v = Eio_linux.Low_level.read_upto t.dev buf upto in
-    Eio.Private.Ctf.note_increase "net_read" (-1);
-    match v with
+    let v = match Eio.Flow.read t.dev buf with
     | -1 -> Error `Continue (* EAGAIN or EWOULDBLOCK *)
     | 0 -> Error `Disconnected (* EOF *)
     | len ->
         Mirage_net.Stats.rx t.stats (Int64.of_int len);
-        let buf = Uring.Region.to_cstruct ~len buf in
-        Ok buf
+        Ok (Cstruct.sub buf 0 len)
     | exception Unix.Unix_error (Unix.ENXIO, _, _) ->
         Log.err (fun m -> m "[read] device %s is down, stopping" t.id);
         Error `Disconnected
     | exception exn ->
         Log.err (fun m ->
             m "[read] error: %s, continuing" (Printexc.to_string exn));
-        Error `Continue
+        Error `Continue 
+    in
+    Eio.Private.Ctf.note_increase "net_read" (-1);
+    v
   in
   match process () with
-  | Error `Continue -> read ~upto t buf
+  | Error `Continue -> read t buf
   | Error `Disconnected -> Error `Disconnected
   | Ok buf -> Ok buf
 
@@ -128,14 +127,15 @@ let listen t ~header_size fn =
     let rec loop () =
       match t.active with
       | true -> (
-          let region = Eio_linux.Low_level.alloc_fixed_or_wait () in
+          let region = Cstruct.create (t.mtu + header_size) in
+          let chunk = Netif_region.alloc_block t.read_buffer in
           let process () =
-            match read ~upto:(t.mtu + header_size) t region with
+            match read t (Netif_region.to_cstruct chunk) with
             | Ok buf ->
                 Fiber.fork ~sw (fun () ->
-                  Log.info (fun f -> f "netif: read (%d)" (Cstruct.length buf));
+                  Log.debug (fun f -> f "netif: read (%d)" (Cstruct.length buf));
                   safe_apply fn buf;
-                  Eio_linux.Low_level.free_fixed region)
+                  Netif_region.free chunk)
             | Error `Canceled -> raise Disconnected
             | Error `Disconnected ->
                 t.active <- false;
@@ -151,12 +151,65 @@ let listen t ~header_size fn =
 
 (* Transmit a packet from a Cstruct.t *)
 let writev t bufs =
-  Log.info (fun f -> f "netif: writev (%d)" (Cstruct.lenv bufs));
+  Log.debug (fun f -> f "netif: writev (%d)" (Cstruct.lenv bufs));
   Eio.Private.Ctf.label "netif: writev";
-  Eio_linux.Low_level.writev t.dev bufs;
+  Eio.Flow.copy (Eio.Flow.cstruct_source bufs) t.dev;
   Mirage_net.Stats.tx t.stats (Int64.of_int (Cstruct.lenv bufs))
 
 let mac t = t.mac
 let mtu t = t.mtu
 let get_stats_counters t = t.stats
 let reset_stats_counters t = Mirage_net.Stats.reset t.stats
+
+(* Eio interop *)
+
+(* todo: don't allocate the same buffer ? *)
+let chunk_cs = Cstruct.create 10000
+
+let fallback_copy src flow = 
+  try
+    while true do
+      let got = Eio.Flow.read src chunk_cs in
+      writev flow [Cstruct.sub chunk_cs 0 got]
+    done
+  with End_of_file -> ()
+
+let copy_with_rsb rsb flow =
+  try
+    rsb @@ fun cstruct ->
+    writev flow cstruct;
+    Cstruct.lenv cstruct
+  with
+  | End_of_file -> ()
+
+let connect ~sw t : Mirage_net.t =
+  let v = connect ~sw t in
+  object (self: Mirage_net.t)
+    method copy (src : #Eio.Flow.source) =
+      let rec aux = function
+        | Eio.Flow.Read_source_buffer rsb :: _ -> copy_with_rsb rsb v
+        | _ :: xs -> aux xs
+        | [] -> fallback_copy src v
+      in
+      aux (Eio.Flow.read_methods src)
+
+    method read_into cstruct =
+      let cst = read v cstruct |> Result.get_ok in
+      Cstruct.length cst
+
+    method shutdown _ = ()
+
+    method probe _ = None
+
+    method read_methods = []
+
+    method get_stats_counters = get_stats_counters v
+
+    method mac = mac v
+
+    method mtu = mtu v
+
+    method reset_stats_counters  = reset_stats_counters v
+
+
+  end

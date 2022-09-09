@@ -83,21 +83,20 @@ module type S = sig
   (** [mtu eth] is the Maximum Transmission Unit of the [eth] i.e. the maximum
       size of the payload, excluding the ethernet frame header. *)
 
-  val input :
+  val read :
     arpv4:(Cstruct.t -> unit) ->
     ipv4:(Cstruct.t -> unit) ->
     ipv6:(Cstruct.t -> unit) ->
     t ->
-    Cstruct.t ->
     unit
   (** [input ~arpv4 ~ipv4 ~ipv6 eth buffer] decodes the buffer and demultiplexes
       it depending on the protocol to the callback. *)
 end
 
-module Make (N : Mirage_net.S) : sig
+module Impl : sig
   include S
 
-  val connect : N.t -> t
+  val connect : Mirage_net.t -> t
   (** [connect netif] connects an ethernet layer on top of the raw
       network device [netif]. *)
 end
