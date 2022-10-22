@@ -1,0 +1,10 @@
+diff --git a/duniverse/httpaf/eio/dune b/duniverse/httpaf/eio/dune
+index 8db863e..4448c4b 100644
+--- a/duniverse/httpaf/eio/dune
++++ b/duniverse/httpaf/eio/dune
+@@ -1,4 +1,4 @@
+ (library
+  (name httpaf_eio)
+  (public_name httpaf-eio)
+- (libraries faraday httpaf eio cstruct))
++ (libraries faraday httpaf eio cstruct unix))

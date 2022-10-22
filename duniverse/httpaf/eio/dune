@@ -1,4 +1,4 @@
 (library
  (name httpaf_eio)
  (public_name httpaf-eio)
- (libraries faraday httpaf eio cstruct))
+ (libraries faraday httpaf eio cstruct unix))
