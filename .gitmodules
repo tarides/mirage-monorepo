@@ -1,0 +1,9 @@
+[submodule "repos/dune-universe"]
+	path = repos/dune-universe
+	url = https://github.com/dune-universe/opam-overlays
+[submodule "repos/alpha"]
+	path = repos/alpha
+	url = https://github.com/kit-ty-kate/opam-alpha-repository
+[submodule "repos/opam-repository"]
+	path = repos/opam-repository
+	url = https://github.com/ocaml/opam-repository

@@ -67,6 +67,19 @@ val noop : 'a t -> 'a -> 'a job option
 (** [noop t d] submits a no-op operation to uring [t]. The user data [d] will be
     returned by {!wait} or {!peek} upon completion. *)
 
+(** {2 Timeout} *)
+
+type clock = Boottime | Realtime
+(** Represents Linux clocks. [Boottime] and [Realtime] represents OS clocks CLOCK_BOOTTIME
+    and CLOCK_REALTIME respectively. *)
+
+val timeout: ?absolute:bool -> 'a t -> clock -> int64 -> 'a -> 'a job option
+(** [timeout t clock ns d] submits a timeout request to uring [t].
+
+    [absolute] denotes how [clock] and [ns] relate to one another. Default value is [false]
+
+    [ns] is the timeout time in nanoseconds *)
+
 module type FLAGS = sig
   type t = private int
   (** A set of flags. *)
@@ -132,6 +145,13 @@ val openat2 : 'a t ->
     @param perm sets the access control bits for newly created files (subject to the process's umask)
     @param resolve controls how the pathname is resolved. *)
 
+val unlink : 'a t -> dir:bool -> ?fd:Unix.file_descr -> string -> 'a -> 'a job option
+(** [unlink t ~dir ~fd path] removes the directory entry [path], which is resolved relative to [fd].
+    If [fd] is not given, then the current working directory is used.
+    If [path] is a symlink, the link is removed, not the target.
+    @param dir If [true], this acts like [rmdir] (only removing empty directories).
+               If [false], it acts like [unlink] (only removing non-directories). *)
+
 module Poll_mask : sig
   include FLAGS
 
@@ -149,17 +169,36 @@ type offset := Optint.Int63.t
 (** For files, give the absolute offset, or use [Optint.Int63.minus_one] for the current position.
     For sockets, use an offset of [Optint.Int63.zero] ([minus_one] is not allowed here). *)
 
+val read : 'a t -> file_offset:offset -> Unix.file_descr -> Cstruct.t -> 'a -> 'a job option
+(** [read t ~file_offset fd buf d] will submit a [read(2)] request to uring [t].
+    It reads from absolute [file_offset] on the [fd] file descriptor and writes
+    the results into the memory pointed to by [buf].  The user data [d] will
+    be returned by {!wait} or {!peek} upon completion. *)
+
+val write : 'a t -> file_offset:offset -> Unix.file_descr -> Cstruct.t -> 'a -> 'a job option
+(** [write t ~file_offset fd buf d] will submit a [write(2)] request to uring [t].
+    It writes to absolute [file_offset] on the [fd] file descriptor from the
+    the memory pointed to by [buf].  The user data [d] will be returned by
+    {!wait} or {!peek} upon completion. *)
+
+val iov_max : int
+(** The maximum length of the list that can be passed to [readv] and similar. *)
+
 val readv : 'a t -> file_offset:offset -> Unix.file_descr -> Cstruct.t list -> 'a -> 'a job option
 (** [readv t ~file_offset fd iov d] will submit a [readv(2)] request to uring [t].
     It reads from absolute [file_offset] on the [fd] file descriptor and writes
     the results into the memory pointed to by [iov].  The user data [d] will
-    be returned by {!wait} or {!peek} upon completion. *)
+    be returned by {!wait} or {!peek} upon completion.
+
+    Requires [List.length iov <= Uring.iov_max] *)
 
 val writev : 'a t -> file_offset:offset -> Unix.file_descr -> Cstruct.t list -> 'a -> 'a job option
 (** [writev t ~file_offset fd iov d] will submit a [writev(2)] request to uring [t].
     It writes to absolute [file_offset] on the [fd] file descriptor from the
     the memory pointed to by [iov].  The user data [d] will be returned by
-    {!wait} or {!peek} upon completion. *)
+    {!wait} or {!peek} upon completion.
+
+    Requires [List.length iov <= Uring.iov_max] *)
 
 val read_fixed : 'a t -> file_offset:offset -> Unix.file_descr -> off:int -> len:int -> 'a -> 'a job option
 (** [read t ~file_offset fd ~off ~len d] will submit a [read(2)] request to uring [t].
@@ -214,24 +253,41 @@ module Msghdr : sig
   type t
 
   val create : ?n_fds:int -> ?addr:Sockaddr.t -> Cstruct.t list -> t
-  (** [create buffs] makes a new [msghdr] using the [buffs] 
+  (** [create buffs] makes a new [msghdr] using the [buffs]
       for the underlying [iovec].
+
+      Requires [List.length buffs <= Uring.iov_max]
+
       @param addr The remote address.
                   Use {!Sockaddr.create} to create a dummy address that will be filled when data is received.
       @param n_fds Reserve space to receive this many FDs (default 0) *)
 
   val get_fds : t -> Unix.file_descr list
-end 
+end
 
 val send_msg : ?fds:Unix.file_descr list -> ?dst:Unix.sockaddr -> 'a t -> Unix.file_descr -> Cstruct.t list -> 'a -> 'a job option
 (** [send_msg t fd buffs d] will submit a [sendmsg(2)] request. The [Msghdr] will be constructed
     from the FDs ([fds]), address ([dst]) and buffers ([buffs]).
+
+    Requires [List.length buffs <= Uring.iov_max]
+
     @param dst Destination address.
     @param fds Extra file descriptors to attach to the message. *)
 
 val recv_msg : 'a t -> Unix.file_descr -> Msghdr.t -> 'a -> 'a job option
-(** [recv_msg t fd msghdr d] will submit a [recvmsg(2)] request. If the request is 
+(** [recv_msg t fd msghdr d] will submit a [recvmsg(2)] request. If the request is
     successful then the [msghdr] will contain the sender address and the data received. *)
+
+(** {2 Probing}
+
+    You can check which operations are supported by the running kernel. *)
+
+module Op = Config.Op
+
+type probe
+
+val get_probe : _ t -> probe
+val op_supported : probe -> Op.t -> bool
 
 (** {2 Submitting operations} *)
 
@@ -250,14 +306,37 @@ type 'a completion_option =
 
 val wait : ?timeout:float -> 'a t -> 'a completion_option
 (** [wait ?timeout t] will block indefinitely (the default) or for [timeout]
-    seconds for any outstanding events to complete on uring [t]. Events should
-    have been queued via {!submit} previously to this call. *)
+    seconds for any outstanding events to complete on uring [t].
+    This calls {!submit} automatically. *)
+
+val get_cqe_nonblocking : 'a t -> 'a completion_option
+(** [get_cqe_nonblocking t] returns the next completion entry from the uring [t].
+    It is like {!wait} except that it returns [None] instead of blocking. *)
 
 val peek : 'a t -> 'a completion_option
-(** [peek t] looks for completed requests on the uring [t] without blocking. *)
+[@@deprecated "Renamed to Uring.get_cqe_nonblocking"]
 
 val error_of_errno : int -> Unix.error
 (** [error_of_errno e] converts the error code [abs e] to a Unix error type. *)
+
+val active_ops : _ t -> int
+(** [active_ops t] returns the number of operations added to the ring (whether submitted or not)
+    for which the completion event has not yet been collected. *)
+
+module Stats : sig
+  type t = {
+    sqe_ready : int;            (** SQEs not yet submitted. *)
+    active_ops : int;           (** See {!Uring.active_ops}. *)
+    sketch_buffer_size : int;   (** Size of the current sketch buffer. *)
+    sketch_used : int;          (** Bytes used within current sketch buffer. *)
+    sketch_old_buffers : int;   (** Old sketch buffers waiting to be freed. *)
+  }
+
+  val pp : t Fmt.t
+end
+
+val get_debug_stats : _ t -> Stats.t
+(** [get_debug_stats t] collects some metrics about the internal state of [t]. *)
 
 module Private : sig
   module Heap = Heap

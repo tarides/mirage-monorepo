@@ -12,6 +12,11 @@
 
 (rule
  (targets config.ml)
+ (deps
+   include/liburing.h
+   include/liburing/io_uring.h
+   include/liburing/barrier.h
+   include/liburing/compat.h)
  (action (run ./include/discover.exe)))
 
 (rule
@@ -30,7 +35,7 @@
        "%{ocaml-config:ocamlc_cflags}"
        (run make -j -C src))))
     (copy %{project_root}/vendor/liburing/src/liburing.a liburing.a)
-    (copy %{project_root}/vendor/liburing/src/liburing.so.2.1.0 dlluring.so)
+    (copy %{project_root}/vendor/liburing/src/liburing.so.2.2 dlluring.so)
     (copy %{project_root}/vendor/liburing/src/include/liburing.h liburing.h)
     (copy %{project_root}/vendor/liburing/src/include/liburing/io_uring.h
       io_uring.h)

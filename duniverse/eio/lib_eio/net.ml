@@ -2,6 +2,7 @@ exception Connection_reset of exn
 (** This is a wrapper for EPIPE, ECONNRESET and similar errors.
     It indicates that the flow has failed, and data may have been lost. *)
 
+exception Connection_failure of exn
 
 module Ipaddr = struct
   type 'a t = string   (* = [Unix.inet_addr], but avoid a Unix dependency here *)
@@ -181,6 +182,7 @@ class virtual t = object
   method virtual connect : sw:Switch.t -> Sockaddr.stream -> <stream_socket; Flow.close>
   method virtual datagram_socket : sw:Switch.t -> Sockaddr.datagram -> <datagram_socket; Flow.close>
   method virtual getaddrinfo : service:string -> string -> Sockaddr.t list
+  method virtual getnameinfo : Sockaddr.t -> (string * string)
 end
 
 let listen ?(reuse_addr=false) ?(reuse_port=false) ~backlog ~sw (t:#t) = t#listen ~reuse_addr ~reuse_port ~backlog ~sw
@@ -190,4 +192,41 @@ let datagram_socket ~sw (t:#t) = t#datagram_socket ~sw
 
 let getaddrinfo ?(service="") (t:#t) hostname = t#getaddrinfo ~service hostname
 
+let getaddrinfo_stream ?service t hostname =
+  getaddrinfo ?service t hostname
+  |> List.filter_map (function
+      | #Sockaddr.stream as x -> Some x
+      | _ -> None
+    )
+
+let getaddrinfo_datagram ?service t hostname =
+  getaddrinfo ?service t hostname
+  |> List.filter_map (function
+      | #Sockaddr.datagram as x -> Some x
+      | _ -> None
+    )
+
+let getnameinfo (t:#t) sockaddr = t#getnameinfo sockaddr
+
 let close = Flow.close
+
+let with_tcp_connect ?(timeout=Time.Timeout.none) ~host ~service t f =
+  Switch.run @@ fun sw ->
+  let rec aux = function
+    | [] -> raise (Connection_failure (Failure (Fmt.str "No TCP addresses for %S" host)))
+    | addr :: addrs ->
+      match Time.Timeout.run_exn timeout (fun () -> connect ~sw t addr) with
+      | conn -> f conn
+      | exception (Time.Timeout | Connection_failure _) when addrs <> [] ->
+        aux addrs
+      | exception (Connection_failure _ as ex) ->
+        raise ex
+      | exception (Time.Timeout as ex) ->
+        raise (Connection_failure ex)
+  in
+  getaddrinfo_stream ~service t host
+  |> List.filter_map (function
+      | `Tcp _ as x -> Some x
+      | `Unix _ -> None
+    )
+  |> aux

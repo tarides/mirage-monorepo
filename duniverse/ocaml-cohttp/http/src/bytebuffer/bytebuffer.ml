@@ -79,45 +79,51 @@ struct
 
   let get_line t idx =
     let len = idx - t.pos_read in
-    let line =
-      let len =
-        if len >= 1 && Char.equal (Bytes.unsafe_get t.buf (idx - 1)) '\r' then
-          len - 1
-        else len
+    if len >= 1 && Char.equal (Bytes.unsafe_get t.buf (idx - 1)) '\r' then (
+      let res =
+        let len = len - 1 in
+        Bytes.sub_string t.buf ~pos:t.pos_read ~len
       in
-      Bytes.sub_string t.buf ~pos:t.pos_read ~len
-    in
-    drop t (len + 1);
-    line
+      drop t (len + 1);
+      Some res)
+    else None
 
-  let rec read_line_slow t reader acc =
+  let get_line_buf t buf idx =
+    let len = idx - t.pos_read in
+    Buffer.add_subbytes buf t.buf t.pos_read len;
+    drop t (len + 1)
+
+  let rec read_line_slow t reader buf =
     if length t = 0 then
       refill t reader >>= function
-      | `Ok -> read_line_slow t reader acc
-      | `Eof -> (
-          IO.return
-          @@ match acc with [] -> `Eof | xs -> `Eof_with_unconsumed xs)
+      | `Ok -> read_line_slow t reader buf
+      | `Eof -> IO.return `Eof
     else
       let idx = index t '\n' in
-      if idx > -1 then
-        let line = get_line t idx in
-        IO.return (`Ok (line :: acc))
+      if idx > -1 then (
+        get_line_buf t buf idx;
+        IO.return `Ok)
       else
         let len = length t in
-        let curr = Bytes.sub_string t.buf ~pos:t.pos_read ~len in
+        Buffer.add_subbytes buf t.buf t.pos_read len;
         drop t len;
-        read_line_slow t reader (curr :: acc)
+        read_line_slow t reader buf
 
   let read_line t reader =
     let idx = index t '\n' in
     if idx = -1 then
-      read_line_slow t reader [] >>| function
+      let buf = Buffer.create (length t + 1) in
+      read_line_slow t reader buf >>| function
       | `Eof -> None
-      | `Eof_with_unconsumed chunks | `Ok chunks ->
-          Some (String.concat "" (List.rev chunks))
+      | `Ok ->
+          let len = Buffer.length buf in
+          if len = 0 then None
+          else if len >= 2 && Buffer.nth buf (len - 1) = '\r' then
+            Some (Buffer.sub buf 0 (len - 1))
+          else None
     else
       let line = get_line t idx in
-      IO.return (Some line)
+      IO.return line
 
   let rec read t reader len =
     let length = length t in

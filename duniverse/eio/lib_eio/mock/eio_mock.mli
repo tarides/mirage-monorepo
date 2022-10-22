@@ -42,7 +42,7 @@ module Action : sig
     | `Return of 'a                     (** Immediately return a value *)
     | `Raise of exn                     (** Raise an exception *)
     | `Await of 'a Eio.Promise.or_exn   (** Wait for a promise to resolve *)
-    | `Yield_then of 'a t               (** Call {!Fiber.yield}, then perform an action *)
+    | `Yield_then of 'a t               (** Call {!Eio.Fiber.yield}, then perform an action *)
     | `Run of unit -> 'a                (** Run any code you like. *)
   ]
 
@@ -122,6 +122,7 @@ module Net : sig
     on_connect : <Eio.Net.stream_socket; Eio.Flow.close> Handler.t;
     on_datagram_socket : <Eio.Net.datagram_socket; Eio.Flow.close> Handler.t;
     on_getaddrinfo : Eio.Net.Sockaddr.t list Handler.t;
+    on_getnameinfo : (string * string) Handler.t;
   >
 
   type listening_socket = <
@@ -143,6 +144,8 @@ module Net : sig
 
   val on_getaddrinfo : t -> Eio.Net.Sockaddr.t list Handler.actions -> unit
 
+  val on_getnameinfo : t -> (string * string) Handler.actions -> unit
+
   val listening_socket : string -> listening_socket
   (** [listening_socket label] can be configured to provide mock connections. *)
 
@@ -152,6 +155,9 @@ module Net : sig
     unit
   (** [on_accept socket actions] configures how to respond when the server calls "accept". *)
 end
+
+(** A mock {!Eio.Time} clock for testing timeouts. *)
+module Clock = Clock
 
 (** {2 Backend for mocks}
 

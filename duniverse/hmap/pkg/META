@@ -1,5 +1,5 @@
 description = "Heterogeneous value maps for OCaml"
-version = "%%VERSION_NUM%%"
+version = "0.8.1+dune"
 requires = ""
 archive(byte) = "hmap.cma"
 archive(native) = "hmap.cmxa"

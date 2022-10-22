@@ -81,14 +81,9 @@ struct
     let t = { netif; ethif; arpv4; ipv4; icmpv4; tcpv4; udpv4; cancel } in
     Log.info (fun f -> f "stack assembled: %a" pp t);
     Eio.Fiber.fork ~sw (fun () ->
-        Eio.Private.Ctf.label "tcpip.stack-direct.listen";
-        Eio.Fiber.first
-          (fun () -> 
-            Eio.Private.Ctf.label "tcpip.stack-direct.listen~network";
-            listen t)
-          (fun () -> 
-            Eio.Private.Ctf.label "tcpip.stack-direct.listen~cancel";
-            Eio.Promise.await cancel_promise));
+        Eio.Fiber.first ~label:"tcpip.stack-direct.listen"
+          (fun () -> listen t)
+          (fun () -> Eio.Promise.await cancel_promise));
     t
 
   let disconnect t =
@@ -153,14 +148,9 @@ struct
     let t = { netif; ethif; ipv6; tcpv6; udpv6; cancel } in
     Log.info (fun f -> f "stack assembled: %a" pp t);
     Eio.Fiber.fork ~sw (fun () ->
-        Eio.Private.Ctf.label "tcpip.stack-direct.listen";
-        Eio.Fiber.first
-          (fun () -> 
-            Eio.Private.Ctf.label "tcpip.stack-direct.listen~network";
-            listen t)
-          (fun () -> 
-            Eio.Private.Ctf.label "tcpip.stack-direct.listen~cancel";
-            Eio.Promise.await cancel_promise));
+        Eio.Fiber.first ~label:"tcpip.stack-direct.listen"
+          (fun () -> listen t)
+          (fun () -> Eio.Promise.await cancel_promise));
     t
 
   let disconnect t =
@@ -338,14 +328,9 @@ struct
     let t = { netif; ethif; arpv4; ip; icmpv4; tcp; udp; cancel } in
     Log.info (fun f -> f "stack assembled: %a" pp t);
     Eio.Fiber.fork ~sw (fun () ->
-        Eio.Private.Ctf.label "tcpip.stack-direct.listen";
-        Eio.Fiber.first
-          (fun () -> 
-            Eio.Private.Ctf.label "tcpip.stack-direct.listen~network";
-            listen t)
-          (fun () -> 
-            Eio.Private.Ctf.label "tcpip.stack-direct.listen~cancel";
-            Eio.Promise.await cancel_promise));
+        Eio.Fiber.first ~label:"tcpip.stack-direct.listen"
+          (fun () -> listen t)
+          (fun () -> Eio.Promise.await cancel_promise));
     t
 
   let disconnect t =

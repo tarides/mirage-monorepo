@@ -52,47 +52,21 @@ module Registrar : sig
   val check_collisions : 'context t -> 'context -> string -> unit
 
   val spellcheck :
-    'context t -> 'context -> ?allowlist:string list -> string -> string option
-
-  module Error : sig
-    val createf :
-      'context t ->
-      'context ->
-      ?allowlist:string list ->
-      (string -> Location.Error.t, unit, string, Location.Error.t) format4 ->
-      string Loc.t ->
-      Location.Error.t
-
-    val raise_errorf :
-      'context t ->
-      'context ->
-      ?allowlist:string list ->
-      (string -> Location.Error.t, unit, string, Location.Error.t) format4 ->
-      string Loc.t ->
-      'a
-
-    val error_extensionf :
-      'context t ->
-      'context ->
-      ?allowlist:string list ->
-      (string -> Location.Error.t, unit, string, Location.Error.t) format4 ->
-      string Loc.t ->
-      extension
-  end
+    'context t -> 'context -> ?white_list:string list -> string -> string option
 
   val raise_errorf :
     'context t ->
     'context ->
-    ?allowlist:string list ->
-    (string -> Location.Error.t, unit, string, Location.Error.t) format4 ->
+    ?white_list:string list ->
+    (string -> 'a, unit, string, 'c) format4 ->
     string Loc.t ->
     'a
 end
 
-module Allowlisted : sig
+module Whitelisted : sig
   val get_attribute_list : unit -> string list
   val get_extension_list : unit -> string list
-  val is_allowlisted : kind:[ `Attribute | `Extension ] -> string -> bool
+  val is_whitelisted : kind:[ `Attribute | `Extension ] -> string -> bool
 end
 
 module Reserved_namespaces : sig

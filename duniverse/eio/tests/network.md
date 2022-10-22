@@ -450,7 +450,7 @@ ECONNRESET:
   try
     ignore (Eio.Flow.read a (Cstruct.create 1) : int);
     assert false
-  with Eio.Net.Connection_reset _ -> traceln "Connection failed (good)";;
+  with Eio.Net.Connection_reset _ | End_of_file -> traceln "Connection failed (good)";;
 +Connection failed (good)
 - : unit = ()
 ```
@@ -467,6 +467,20 @@ EPIPE:
     assert false
   with Eio.Net.Connection_reset _ -> traceln "Connection failed (good)";;
 +Connection failed (good)
+- : unit = ()
+```
+
+Connection refused:
+
+```ocaml
+# Eio_main.run @@ fun env ->
+  Switch.run @@ fun sw ->
+  try
+    ignore (Eio.Net.connect ~sw env#net (`Unix "idontexist.sock"));
+    assert false
+  with Eio.Net.Connection_failure _ ->
+    traceln "Connection failure";;
++Connection failure
 - : unit = ()
 ```
 
@@ -490,16 +504,26 @@ EPIPE:
 
 ```ocaml
 # Eio_main.run @@ fun env ->
-  Eio.Net.getaddrinfo env#net "127.0.0.1";;
-- : Eio.Net.Sockaddr.t list =
-[`Tcp ("\127\000\000\001", 0); `Udp ("\127\000\000\001", 0)]
+  Eio.Net.getaddrinfo_stream env#net "127.0.0.1";;
+- : Eio.Net.Sockaddr.stream list = [`Tcp ("\127\000\000\001", 0)]
 ```
 
 ```ocaml
 # Eio_main.run @@ fun env ->
-  Eio.Net.getaddrinfo env#net "127.0.0.1" ~service:"80";;
-- : Eio.Net.Sockaddr.t list =
-[`Tcp ("\127\000\000\001", 80); `Udp ("\127\000\000\001", 80)]
+  Eio.Net.getaddrinfo_stream env#net "127.0.0.1" ~service:"80";;
+- : Eio.Net.Sockaddr.stream list = [`Tcp ("\127\000\000\001", 80)]
+```
+
+```ocaml
+# Eio_main.run @@ fun env ->
+  Eio.Net.getaddrinfo_datagram env#net "127.0.0.1";;
+- : Eio.Net.Sockaddr.datagram list = [`Udp ("\127\000\000\001", 0)]
+```
+
+```ocaml
+# Eio_main.run @@ fun env ->
+  Eio.Net.getaddrinfo_datagram env#net "127.0.0.1" ~service:"80";;
+- : Eio.Net.Sockaddr.datagram list = [`Udp ("\127\000\000\001", 80)]
 ```
 
 <!-- $MDX non-deterministic=output -->
@@ -527,3 +551,177 @@ EPIPE:
  `Tcp ("*\000\020P@\t\b \000\000\000\000\000\000 \014", 443);
  `Udp ("*\000\020P@\t\b \000\000\000\000\000\000 \014", 443)]
 ```
+
+## getnameinfo
+
+```ocaml
+# Eio_main.run @@ fun env ->
+  let sockaddr = `Tcp (Eio.Net.Ipaddr.V4.loopback, 80) in
+  Eio.Net.getnameinfo env#net sockaddr;;
+- : string * string = ("localhost", "http")
+```
+
+## with_tcp_connet
+
+```ocaml
+let net = Eio_mock.Net.make "mock-net"
+let addr1 = `Tcp (Eio.Net.Ipaddr.V4.loopback, 80)
+let addr2 = `Tcp (Eio.Net.Ipaddr.of_raw "\001\002\003\004", 8080)
+let connection_failure = Eio.Net.Connection_failure (Failure "Simulated connection failure")
+```
+
+No usable addresses:
+
+```ocaml
+# Eio_mock.Backend.run @@ fun () ->
+  Eio_mock.Net.on_getaddrinfo net [`Return [`Unix "/foo"]];
+  Eio.Net.with_tcp_connect ~host:"www.example.com" ~service:"http" net (fun _ -> assert false);;
++mock-net: getaddrinfo ~service:http www.example.com
+Exception:
+Eio__Net.Connection_failure
+ (Failure "No TCP addresses for \"www.example.com\"").
+```
+
+First address works:
+
+```ocaml
+# Eio_mock.Backend.run @@ fun () ->
+  Eio_mock.Net.on_getaddrinfo net [`Return [addr1; addr2]];
+  let mock_flow = Eio_mock.Flow.make "flow" in
+  Eio_mock.Net.on_connect net [`Return mock_flow];
+  Eio.Net.with_tcp_connect ~host:"www.example.com" ~service:"http" net (fun conn ->
+     let req = "GET / HTTP/1.1\r\nHost:www.example.com:80\r\n\r\n" in
+     Eio.Flow.copy_string req conn
+  );;
++mock-net: getaddrinfo ~service:http www.example.com
++mock-net: connect to tcp:127.0.0.1:80
++flow: wrote "GET / HTTP/1.1\r\n"
++            "Host:www.example.com:80\r\n"
++            "\r\n"
++flow: closed
+- : unit = ()
+```
+
+Second address works:
+
+```ocaml
+# Eio_mock.Backend.run @@ fun () ->
+  Eio_mock.Net.on_getaddrinfo net [`Return [addr1; addr2]];
+  let mock_flow = Eio_mock.Flow.make "flow" in
+  Eio_mock.Net.on_connect net [`Raise connection_failure;
+                               `Return mock_flow];
+  Eio.Net.with_tcp_connect ~host:"www.example.com" ~service:"http" net (fun conn ->
+     let req = "GET / HTTP/1.1\r\nHost:www.example.com:80\r\n\r\n" in
+     Eio.Flow.copy_string req conn
+  );;
++mock-net: getaddrinfo ~service:http www.example.com
++mock-net: connect to tcp:127.0.0.1:80
++mock-net: connect to tcp:1.2.3.4:8080
++flow: wrote "GET / HTTP/1.1\r\n"
++            "Host:www.example.com:80\r\n"
++            "\r\n"
++flow: closed
+- : unit = ()
+```
+
+Both addresses fail:
+
+```ocaml
+# Eio_mock.Backend.run @@ fun () ->
+  Eio_mock.Net.on_getaddrinfo net [`Return [addr1; addr2]];
+  Eio_mock.Net.on_connect net [`Raise connection_failure; `Raise connection_failure];
+  Eio.Net.with_tcp_connect ~host:"www.example.com" ~service:"http" net (fun _ -> assert false);;
++mock-net: getaddrinfo ~service:http www.example.com
++mock-net: connect to tcp:127.0.0.1:80
++mock-net: connect to tcp:1.2.3.4:8080
+Exception:
+Eio__Net.Connection_failure (Failure "Simulated connection failure").
+```
+
+First attempt times out:
+
+```ocaml
+# Eio_mock.Backend.run @@ fun () ->
+  let clock = Eio_mock.Clock.make () in
+  let timeout = Eio.Time.Timeout.of_s clock 10. in
+  Eio_mock.Net.on_getaddrinfo net [`Return [addr1; addr2]];
+  let mock_flow = Eio_mock.Flow.make "flow" in
+  Eio_mock.Net.on_connect net [`Run Fiber.await_cancel; `Return mock_flow];
+  Fiber.both
+    (fun () ->
+       Eio.Net.with_tcp_connect ~timeout ~host:"www.example.com" ~service:"http" net (fun conn ->
+          let req = "GET / HTTP/1.1\r\nHost:www.example.com:80\r\n\r\n" in
+          Eio.Flow.copy_string req conn
+       )
+    )
+    (fun () ->
+       Eio_mock.Clock.advance clock
+     );;
++mock-net: getaddrinfo ~service:http www.example.com
++mock-net: connect to tcp:127.0.0.1:80
++mock time is now 10
++mock-net: connect to tcp:1.2.3.4:8080
++flow: wrote "GET / HTTP/1.1\r\n"
++            "Host:www.example.com:80\r\n"
++            "\r\n"
++flow: closed
+- : unit = ()
+```
+
+Both attempts time out:
+
+```ocaml
+# Eio_mock.Backend.run @@ fun () ->
+  let clock = Eio_mock.Clock.make () in
+  let timeout = Eio.Time.Timeout.of_s clock 10. in
+  Eio_mock.Net.on_getaddrinfo net [`Return [addr1; addr2]];
+  Eio_mock.Net.on_connect net [`Run Fiber.await_cancel; `Run Fiber.await_cancel];
+  Fiber.both
+    (fun () ->
+       Eio.Net.with_tcp_connect ~timeout ~host:"www.example.com" ~service:"http" net (fun _ ->
+          assert false
+       )
+    )
+    (fun () ->
+       Eio_mock.Clock.advance clock;
+       Fiber.yield ();
+       Fiber.yield ();
+       Eio_mock.Clock.advance clock
+     );;
++mock-net: getaddrinfo ~service:http www.example.com
++mock-net: connect to tcp:127.0.0.1:80
++mock time is now 10
++mock-net: connect to tcp:1.2.3.4:8080
++mock time is now 20
+Exception: Eio__Net.Connection_failure Eio__Time.Timeout.
+```
+
+## read/write on SOCK_DGRAM
+
+```ocaml
+# Eio_main.run @@ fun _ ->
+  Switch.run @@ fun sw ->
+  let a, b = Eio_unix.socketpair ~sw ~domain:Unix.PF_UNIX ~ty:Unix.SOCK_DGRAM () in
+  ignore (Eio_unix.FD.peek a : Unix.file_descr);
+  ignore (Eio_unix.FD.peek b : Unix.file_descr);
+  let l = [ "foo"; "bar"; "foobar"; "cellar door" ] in
+  let buf = Cstruct.create 32 in
+  let write bufs = Eio.Flow.write a (List.map Cstruct.of_string bufs) in
+  let read () =
+    let n = Eio.Flow.read b buf in
+    traceln "Got: %d bytes: %S" n Cstruct.(to_string (sub buf 0 n))
+  in
+  List.iter (fun sbuf -> write [sbuf]) l;
+  List.iter (fun _ -> read ()) l;
+  write ["abaca"; "bb"];
+  read ();
+  Eio.Flow.close a;
+  Eio.Flow.close b;;
++Got: 3 bytes: "foo"
++Got: 3 bytes: "bar"
++Got: 6 bytes: "foobar"
++Got: 11 bytes: "cellar door"
++Got: 7 bytes: "abacabb"
+- : unit = ()
+```
+

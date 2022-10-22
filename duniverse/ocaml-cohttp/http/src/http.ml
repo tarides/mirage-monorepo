@@ -14,56 +14,51 @@ module Transfer = struct
 end
 
 module Header = struct
-  module Private = struct
-    external string_unsafe_get64 : string -> int -> int64
-      = "%caml_string_get64u"
+  external string_unsafe_get64 : string -> int -> int64 = "%caml_string_get64u"
 
-    (* [caseless_equal a b] must be equivalent to
-       [String.equal (String.lowercase_ascii a) (String.lowercase_ascii b)]. *)
-    let caseless_equal a b =
-      if a == b then true
-      else
-        let len = String.length a in
-        len = String.length b
-        (* Note: at this point we konw that [a] and [b] have the same length. *)
-        &&
-        (* [word_loop a b i len] compares strings [a] and [b] from
-           offsets [i] (included) to [len] (excluded), one word at a time.
-           [i] is a world-aligned index into the strings.
-        *)
-        let rec word_loop a b i len =
-          if i = len then true
+  (* [caseless_equal a b] must be equivalent to
+     [String.equal (String.lowercase_ascii a) (String.lowercase_ascii b)]. *)
+  let caseless_equal a b =
+    if a == b then true
+    else
+      let len = String.length a in
+      len = String.length b
+      (* Note: at this point we konw that [a] and [b] have the same length. *)
+      &&
+      (* [word_loop a b i len] compares strings [a] and [b] from
+         offsets [i] (included) to [len] (excluded), one word at a time.
+         [i] is a world-aligned index into the strings.
+      *)
+      let rec word_loop a b i len =
+        if i = len then true
+        else
+          let i' = i + 8 in
+          (* If [i' > len], what remains to be compared is strictly
+             less than a word long, use byte-per-byte comparison. *)
+          if i' > len then byte_loop a b i len
+          else if string_unsafe_get64 a i = string_unsafe_get64 b i then
+            word_loop a b i' len
           else
-            let i' = i + 8 in
-            (* If [i' > len], what remains to be compared is strictly
-               less than a word long, use byte-per-byte comparison. *)
-            if i' > len then byte_loop a b i len
-            else if string_unsafe_get64 a i = string_unsafe_get64 b i then
-              word_loop a b i' len
-            else
-              (* If the words at [i] differ, it may due to a case
-                 difference; we check the individual bytes of this
-                 work, and then we continue checking the other
-                 words. *)
-              byte_loop a b i i' && word_loop a b i' len
-        (* [byte_loop a b i len] compares the strings [a] and [b] from
-           offsets [i] (included) to [len] (excluded), one byte at
-           a time.
+            (* If the words at [i] differ, it may due to a case
+               difference; we check the individual bytes of this
+               work, and then we continue checking the other
+               words. *)
+            byte_loop a b i i' && word_loop a b i' len
+      (* [byte_loop a b i len] compares the strings [a] and [b] from
+         offsets [i] (included) to [len] (excluded), one byte at
+         a time.
 
-           This function assumes that [i < len] holds -- its only called
-           by [word_loop] when this is known to hold. *)
-        and byte_loop a b i len =
-          let c1 = String.unsafe_get a i in
-          let c2 = String.unsafe_get b i in
-          Char.lowercase_ascii c1 = Char.lowercase_ascii c2
-          &&
-          let i' = i + 1 in
-          i' = len || byte_loop a b i' len
-        in
-        word_loop a b 0 len
-  end
-
-  let caseless_equal = Private.caseless_equal
+         This function assumes that [i < len] holds -- its only called
+         by [word_loop] when this is known to hold. *)
+      and byte_loop a b i len =
+        let c1 = String.unsafe_get a i in
+        let c2 = String.unsafe_get b i in
+        Char.lowercase_ascii c1 = Char.lowercase_ascii c2
+        &&
+        let i' = i + 1 in
+        i' = len || byte_loop a b i' len
+      in
+      word_loop a b 0 len
 
   type t = (string * string) list
 
@@ -107,6 +102,8 @@ module Header = struct
       | (k', v) :: h' -> if caseless_equal k k' then Some v else loop h'
     in
     loop h
+
+  let first t = match t with [] -> None | (k, v) :: _ -> Some (k, v)
 
   let get_multi (h : t) (k : string) =
     let rec loop h acc =
@@ -163,6 +160,16 @@ module Header = struct
     | xs, _ ->
         let h = remove h k in
         add_multi h k xs
+
+  let move_to_front t hdr_name =
+    match t with
+    | (k, _) :: _ when caseless_equal k hdr_name -> t
+    | _ -> (
+        match get t hdr_name with
+        | Some v ->
+            let headers = remove t hdr_name in
+            add headers hdr_name v
+        | None -> t)
 
   let map (f : string -> string -> string) (h : t) : t =
     List.map
@@ -339,6 +346,12 @@ module Header = struct
     | Some v when v = "close" -> Some `Close
     | Some x -> Some (`Unknown x)
     | _ -> None
+
+  module Private = struct
+    let caseless_equal = caseless_equal
+    let first = first
+    let move_to_front = move_to_front
+  end
 end
 
 module Status = struct
@@ -720,6 +733,14 @@ let is_keep_alive version headers =
 let pp_field field_name pp_v fmt v =
   Format.fprintf fmt "@[<1>%s:@ %a@]" field_name pp_v v
 
+let content_length requires_content_length headers =
+  let ( let* ) o f = Option.bind o f in
+  if requires_content_length then
+    let* x = Header.get headers "Content-Length" in
+    let* x = int_of_string_opt x in
+    if x >= 0 then Some x else None
+  else None
+
 module Request = struct
   type t = {
     headers : Header.t;  (** HTTP request headers *)
@@ -755,6 +776,19 @@ module Request = struct
     | i -> i
 
   let is_keep_alive { version; headers; _ } = is_keep_alive version headers
+
+  let requires_content_length t =
+    match t.meth with `POST | `PUT | `PATCH -> true | _ -> false
+
+  let content_length t = content_length (requires_content_length t) t.headers
+
+  let supports_chunked_trailers t =
+    Header.get_multi t.headers "TE" |> List.mem "trailers"
+
+  let add_te_trailers t =
+    let headers = Header.add t.headers "TE" "trailers" in
+    let headers = Header.add headers "Connection" "TE" in
+    { t with headers }
 
   (* Defined for method types in RFC7231 *)
   let has_body req =
@@ -815,6 +849,15 @@ module Response = struct
   let status t = t.status
   let flush t = t.flush
   let is_keep_alive { version; headers; _ } = is_keep_alive version headers
+
+  let requires_content_length ?request_meth t =
+    match (Status.to_int t.status, request_meth) with
+    | 204, _ -> false
+    | s, _ when s >= 100 && s < 200 -> false
+    | s, Some meth when s >= 200 && s < 300 && meth = `CONNECT -> false
+    | _, _ -> not (Header.mem t.headers "Transfer-Encoding")
+
+  let content_length t = content_length (requires_content_length t) t.headers
 
   let pp fmt t =
     let open Format in

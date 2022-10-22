@@ -109,30 +109,10 @@ module Domain_manager : sig
 end
 
 (** Clocks, time, sleeping and timeouts. *)
-module Time : sig
-  class virtual clock : object
-    method virtual now : float
-    method virtual sleep_until : float -> unit
-  end
+module Time = Time
 
-  val now : #clock -> float
-  (** [now t] is the current time according to [t]. *)
-
-  val sleep_until : #clock -> float -> unit
-  (** [sleep_until t time] waits until the given time is reached. *)
-
-  val sleep : #clock -> float -> unit
-  (** [sleep t d] waits for [d] seconds. *)
-
-  val with_timeout : #clock -> float -> (unit -> ('a, 'e) result) -> ('a, [> `Timeout] as 'e) result
-  (** [with_timeout clock d fn] runs [fn ()] but cancels it after [d] seconds. *)
-
-  exception Timeout
-
-  val with_timeout_exn : #clock -> float -> (unit -> 'a) -> 'a
-  (** [with_timeout_exn clock d fn] runs [fn ()] but cancels it after [d] seconds,
-      raising exception [Timeout]. *)
-end
+(** Operations on open files. *)
+module File = File
 
 (** File-system types. *)
 module Fs = Fs

@@ -40,16 +40,21 @@ let%expect_test "read line" =
     | Some line -> Printf.printf "read line: %S\n" line
     | exception Exit -> print_endline "failed to read - infinite loop"
   in
-  let line = "foobar\n" in
+  let line = "foobar\r\n" in
   test line (String.length line);
   [%expect {| read line: "foobar" |}];
   test line (String.length line - 1);
   [%expect {| read line: "foobar" |}];
   let line = "foobar\r\n" in
   test line (String.length line - 1);
-  [%expect {| read line: "foobar\r" |}];
+  [%expect {| read line: "foobar" |}];
   test line (String.length line);
-  [%expect {| read line: "foobar" |}]
+  [%expect {| read line: "foobar" |}];
+  let line = "foobar\r" in
+  test line (String.length line + 10);
+  [%expect {| failed to read line |}];
+  test line (String.length line - 1);
+  [%expect {| failed to read line |}]
 
 let%expect_test "read fixed" =
   let src = "foobar" in

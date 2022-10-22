@@ -170,7 +170,6 @@ type t = {
   need_wakeup : bool Atomic.t;
 
   sleep_q: Zzz.t;
-  mutable io_jobs: int;
 }
 
 let wake_buffer =
@@ -410,6 +409,19 @@ let rec enqueue_openat2 ((access, flags, perm, resolve, dir, path) as args) st a
     | Error ex -> enqueue_failed_thread st action ex
     | Ok fd -> use (Some fd)
 
+
+let rec enqueue_unlink ((dir, fd, path) as args) st action =
+  Ctf.label "unlinkat";
+  match FD.get "unlink" fd with
+  | Error ex -> enqueue_failed_thread st action ex
+  | Ok fd ->
+    let retry = with_cancel_hook ~action st (fun () ->
+        Uring.unlink st.uring ~dir ~fd path (Job action)
+      )
+    in
+    if retry then (* wait until an sqe is available *)
+      Queue.push (fun st -> enqueue_unlink args st action) st.io_q
+
 let rec enqueue_connect fd addr st action =
   Log.debug (fun l -> l "connect: submitting call");
   Ctf.label "connect";
@@ -458,7 +470,7 @@ let rec enqueue_recv_msg fd msghdr st action =
       )
     in
     if retry then (* wait until an sqe is available *)
-      Queue.push (fun st -> enqueue_recv_msg fd msghdr st action) st.io_q 
+      Queue.push (fun st -> enqueue_recv_msg fd msghdr st action) st.io_q
 
 let rec enqueue_accept fd client_addr st action =
   Log.debug (fun l -> l "accept: submitting call");
@@ -509,24 +521,24 @@ let rec schedule ({run_q; sleep_q; mem_q; uring; _} as st) : [`Exit_scheduler] =
       Suspended.continue k ()                   (* A sleeping task is now due *)
     | `Wait_until _ | `Nothing as next_due ->
       (* Handle any pending events before submitting. This is faster. *)
-      match Uring.peek uring with
+      match Uring.get_cqe_nonblocking uring with
       | Some { data = runnable; result } ->
         Lf_queue.push run_q IO;                   (* Re-inject IO job in the run queue *)
         handle_complete st ~runnable result
       | None ->
-        let num_jobs = Uring.submit uring in
-        st.io_jobs <- st.io_jobs + num_jobs;
+        ignore (Uring.submit uring : int);
         let timeout =
           match next_due with
           | `Wait_until time -> Some (time -. now)
           | `Nothing -> None
         in
-        Log.debug (fun l -> l "scheduler: %d sub / %d total, timeout %s" num_jobs st.io_jobs
-                      (match timeout with None -> "inf" | Some v -> string_of_float v));
+        Log.debug (fun l -> l "@[<v2>scheduler out of jobs, next timeout %s:@,%a@]"
+                      (match timeout with None -> "inf" | Some v -> string_of_float v)
+                      Uring.Stats.pp (Uring.get_debug_stats uring));
         if not (Lf_queue.is_empty st.run_q) then (
           Lf_queue.push run_q IO;                   (* Re-inject IO job in the run queue *)
           schedule st
-        ) else if timeout = None && st.io_jobs = 0 then (
+        ) else if timeout = None && Uring.active_ops uring = 0 then (
           (* Nothing further can happen at this point.
              If there are no events in progress but also still no memory available, something has gone wrong! *)
           assert (Queue.length mem_q = 0);
@@ -559,7 +571,6 @@ let rec schedule ({run_q; sleep_q; mem_q; uring; _} as st) : [`Exit_scheduler] =
           )
         )
 and handle_complete st ~runnable result =
-  st.io_jobs <- st.io_jobs - 1;
   submit_pending_io st;                       (* If something was waiting for a slot, submit it now. *)
   match runnable with
   | Read req ->
@@ -736,7 +747,8 @@ module Low_level = struct
     let res = enter (enqueue_connect fd addr) in
     Log.debug (fun l -> l "connect returned");
     if res < 0 then (
-      raise (Unix.Unix_error (Uring.error_of_errno res, "connect", ""))
+      let ex = Unix.Unix_error (Uring.error_of_errno res, "connect", "") in
+      raise (Eio.Net.Connection_failure ex)
     )
 
   let send_msg fd ?(fds=[]) ?dst buf =
@@ -810,8 +822,6 @@ module Low_level = struct
 
   external eio_mkdirat : Unix.file_descr -> string -> Unix.file_perm -> unit = "caml_eio_mkdirat"
 
-  external eio_unlinkat : Unix.file_descr -> string -> bool -> unit = "caml_eio_unlinkat"
-
   external eio_renameat : Unix.file_descr -> string -> Unix.file_descr -> string -> unit = "caml_eio_renameat"
 
   external eio_getrandom : Cstruct.buffer -> int -> int -> int = "caml_eio_getrandom"
@@ -850,7 +860,8 @@ module Low_level = struct
     (* [unlink] is really an operation on [path]'s parent. Get a reference to that first: *)
     with_parent_dir dir path @@ fun parent leaf ->
     wrap_errors path @@ fun () ->
-    eio_unlinkat (FD.get_exn "unlinkat" parent) leaf rmdir
+    let res = enter (enqueue_unlink (rmdir, parent, leaf)) in
+    if res <> 0 then raise @@ Unix.Unix_error (Uring.error_of_errno res, "unlinkat", "")
 
   let rename old_dir old_path new_dir new_path =
     with_parent_dir old_dir old_path @@ fun old_parent old_leaf ->
@@ -908,7 +919,7 @@ module Low_level = struct
     in
     Eio_unix.run_in_systhread @@ fun () ->
     Unix.getaddrinfo node service []
-    |> List.filter_map to_eio_sockaddr_t    
+    |> List.filter_map to_eio_sockaddr_t
 end
 
 external eio_eventfd : int -> Unix.file_descr = "caml_eio_eventfd"
@@ -989,20 +1000,20 @@ let udp_socket sock = object
 
   method close = FD.close sock
 
-  method send sockaddr buf = 
-    let addr = match sockaddr with 
-      | `Udp (host, port) -> 
+  method send sockaddr buf =
+    let addr = match sockaddr with
+      | `Udp (host, port) ->
         let host = Eio_unix.Ipaddr.to_unix host in
         Unix.ADDR_INET (host, port)
     in
-    Low_level.send_msg sock ~dst:addr [buf] 
-  
+    Low_level.send_msg sock ~dst:addr [buf]
+
   method recv buf =
     let addr, recv = Low_level.recv_msg sock [buf] in
     match Uring.Sockaddr.get addr with
       | Unix.ADDR_INET (inet, port) ->
         `Udp (Eio_unix.Ipaddr.of_unix inet, port), recv
-      | Unix.ADDR_UNIX _ -> 
+      | Unix.ADDR_UNIX _ ->
         raise (Failure "Expected INET UDP socket address but got Unix domain socket address.")
 end
 
@@ -1025,7 +1036,15 @@ let flow fd =
       );
       Low_level.readv fd [buf]
 
+    method pread ~file_offset bufs =
+      Low_level.readv ~file_offset fd bufs
+
+    method pwrite ~file_offset bufs =
+      Low_level.writev_single ~file_offset fd bufs
+
     method read_methods = []
+
+    method write bufs = Low_level.writev fd bufs
 
     method copy src =
       match get_fd_opt src with
@@ -1139,6 +1158,8 @@ let net = object
       udp_socket sock
 
   method getaddrinfo = Low_level.getaddrinfo
+
+  method getnameinfo = Eio_unix.getnameinfo
 end
 
 type stdenv = <
@@ -1192,7 +1213,7 @@ class dir ~label (fd : dir_fd) = object
         ~flags:Uring.Open_flags.cloexec
         ~perm:0
     in
-    (flow fd :> <Eio.Flow.source; Eio.Flow.close>)
+    (flow fd :> <Eio.File.ro; Eio.Flow.close>)
 
   method open_out ~sw ~append ~create path =
     let perm, flags =
@@ -1208,7 +1229,7 @@ class dir ~label (fd : dir_fd) = object
         ~flags:Uring.Open_flags.(cloexec + flags)
         ~perm
     in
-    (flow fd :> <Eio.Fs.rw; Eio.Flow.close>)
+    (flow fd :> <Eio.File.rw; Eio.Flow.close>)
 
   method open_dir ~sw path =
     let fd = Low_level.openat ~sw ~seekable:false fd path
@@ -1326,7 +1347,7 @@ let rec run : type a.
   let io_q = Queue.create () in
   let mem_q = Queue.create () in
   let eventfd = FD.placeholder ~seekable:false ~close_unix:false in
-  let st = { mem; uring; run_q; eventfd_mutex; io_q; mem_q; eventfd; need_wakeup = Atomic.make false; sleep_q; io_jobs = 0 } in
+  let st = { mem; uring; run_q; eventfd_mutex; io_q; mem_q; eventfd; need_wakeup = Atomic.make false; sleep_q } in
   Log.debug (fun l -> l "starting main thread");
   let rec fork ~new_fiber:fiber fn =
     let open Effect.Deep in
