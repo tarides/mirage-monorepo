@@ -1,4 +1,11 @@
 ## Unreleased
+- cohttp-eio: ensure "Host" header is the first header in http client requests (bikallem #939)
+- cohttp-eio: add TE header in client. Check TE header is server (bikallem #941)
+- cohttp-eio: add User-Agent header to request from Client (bikallem #940)
+- cohttp-eio: add Content-Length header to request/response (bikallem #929)
+- cohttp-eio: add cohttp-eio client api - Cohttp_eio.Client (bikallem #879)
+- http: add requires_content_length function for requests and responses (bikallem #879)
+- cohttp-eio: use Eio.Buf_write and improve server API (talex5 #887)
 - cohttp-eio: update to Eio 0.3 (talex5 #886)
 - cohttp-eio: convert to Eio.Buf_read (talex5 #882)
 - cohttp lwt client: Connection cache and explicit pipelining (madroach #853)
@@ -49,6 +56,9 @@
   + refactor: deprecate using attributes (rgrinberg #796)
   + cleanup: remove cohttp-{curl,server}-async (rgrinberg #904)
   + cleanup: remove cohttp-{curl,server,proxy}-lwt (rgrinberg #904)
+  + fix: all parsers now follow the spec and require `\r\n` endings.
+    Previously, the `\r` was optional. (rgrinberg, #921)
+- `cohttp-lwt-jsoo`: do not instantiate `XMLHttpRequest` object on boot (mefyl #922)
 
 ## v5.0.0 (2021-12-15)
 

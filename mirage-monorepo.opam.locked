@@ -4,7 +4,7 @@ maintainer: "opam-monorepo"
 depends: [
   "angstrom" {= "dev" & ?vendor}
   "arp" {= "3.0.0" & ?vendor}
-  "base" {= "v0.15.1~5.0preview" & ?vendor}
+  "base" {= "v0.15.1" & ?vendor}
   "base-bigarray" {= "base"}
   "base-bytes" {= "base"}
   "base-domains" {= "base"}
@@ -13,6 +13,7 @@ depends: [
   "base-unix" {= "base"}
   "bigarray-compat" {= "1.1.0" & ?vendor}
   "bigstringaf" {= "0.9.0" & ?vendor}
+  "bisect_ppx" {= "2.8.1" & ?vendor}
   "cmdliner" {= "1.1.1+dune" & ?vendor}
   "cohttp-eio" {= "dev" & ?vendor}
   "conf-pkg-config" {= "2"}
@@ -24,22 +25,23 @@ depends: [
   "domain-name" {= "0.4.0" & ?vendor}
   "dune" {= "3.3.1"}
   "dune-configurator" {= "3.3.1" & ?vendor}
-  "duration" {= "0.2.0" & ?vendor}
-  "eio" {= "0.2" & ?vendor}
-  "eio_linux" {= "0.2" & ?vendor}
-  "eio_luv" {= "0.2" & ?vendor}
-  "eio_main" {= "0.2" & ?vendor}
+  "duration" {= "0.2.1" & ?vendor}
+  "eio" {= "0.6" & ?vendor}
+  "eio_linux" {= "0.6" & ?vendor}
+  "eio_luv" {= "0.6" & ?vendor}
+  "eio_main" {= "0.6" & ?vendor}
   "ethernet" {= "dev" & ?vendor}
-  "faraday" {= "0.8.1" & ?vendor}
+  "faraday" {= "0.8.2" & ?vendor}
   "findlib" {= "1.8.1+dune" & ?vendor}
   "fmt" {= "0.9.0+dune" & ?vendor}
+  "hmap" {= "0.8.1+dune" & ?vendor}
   "http" {= "dev" & ?vendor}
   "httpaf" {= "dev" & ?vendor}
   "integers" {= "0.7.0" & ?vendor}
   "ipaddr" {= "5.3.1" & ?vendor}
   "logs" {= "0.7.0+dune2" & ?vendor}
   "lru" {= "0.3.0.1~alpha-repo" & ?vendor}
-  "luv" {= "0.5.11" & ?vendor}
+  "luv" {= "dev" & ?vendor}
   "luv_unix" {= "0.5.0" & ?vendor}
   "lwt" {= "5.6.1" & ?vendor}
   "lwt-dllist" {= "1.0.1" & ?vendor}
@@ -57,7 +59,7 @@ depends: [
   "mtime" {= "1.4.0+dune2" & ?vendor}
   "num" {= "1.4+dune2" & ?vendor}
   "ocaml" {= "5.0.0"}
-  "ocaml-base-compiler" {= "5.0.0~alpha1"}
+  "ocaml-base-compiler" {= "5.0.0~beta1"}
   "ocaml-compiler-libs" {= "v0.12.4" & ?vendor}
   "ocaml-config" {= "3"}
   "ocaml-options-vanilla" {= "1"}
@@ -68,7 +70,7 @@ depends: [
   "parsexp" {= "v0.15.0" & ?vendor}
   "ppx_cstruct" {= "6.1.1" & ?vendor}
   "ppx_derivers" {= "1.2.1" & ?vendor}
-  "ppxlib" {= "0.27.0" & ?vendor}
+  "ppxlib" {= "0.25.1" & ?vendor}
   "psq" {= "0.2.0" & ?vendor}
   "randomconv" {= "0.1.3" & ?vendor}
   "result" {= "1.5" & ?vendor}
@@ -78,7 +80,7 @@ depends: [
   "stdlib-shims" {= "0.3.0" & ?vendor}
   "tcpip" {= "dev" & ?vendor}
   "tuntap" {= "2.0.0" & ?vendor}
-  "uring" {= "0.3" & ?vendor}
+  "uring" {= "0.4" & ?vendor}
 ]
 depexts: [
   ["devel/pkgconf"] {os = "openbsd"}
@@ -110,8 +112,8 @@ pin-depends: [
     "git+https://github.com/TheLortex/arp.git#e721843ed9b9e1c34480db222c721b3f4d40a7da"
   ]
   [
-    "base.v0.15.1~5.0preview"
-    "git+https://github.com/kit-ty-kate/base#423dbad212f55506767d758b1ceb2d6e0ee8e7f5"
+    "base.v0.15.1"
+    "https://github.com/janestreet/base/archive/refs/tags/v0.15.1.tar.gz"
   ]
   [
     "bigarray-compat.1.1.0"
@@ -122,12 +124,16 @@ pin-depends: [
     "https://github.com/inhabitedtype/bigstringaf/archive/0.9.0.tar.gz"
   ]
   [
+    "bisect_ppx.2.8.1"
+    "https://github.com/aantron/bisect_ppx/archive/2.8.1.tar.gz"
+  ]
+  [
     "cmdliner.1.1.1+dune"
     "https://erratique.ch/software/cmdliner/releases/cmdliner-1.1.1.tbz"
   ]
   [
     "cohttp-eio.dev"
-    "git+https://github.com/mirage/ocaml-cohttp.git#5ee84489cf6755711d0e7c0f1365685a15cae468"
+    "git+https://github.com/mirage/ocaml-cohttp.git#884c18e194f93748d1f4b21c15279d937fcd7dac"
   ]
   [
     "cppo.1.6.9"
@@ -158,32 +164,32 @@ pin-depends: [
     "https://github.com/ocaml/dune/releases/download/3.3.1/dune-3.3.1.tbz"
   ]
   [
-    "duration.0.2.0"
-    "https://github.com/hannesm/duration/releases/download/0.2.0/duration-0.2.0.tbz"
+    "duration.0.2.1"
+    "https://github.com/hannesm/duration/releases/download/v0.2.1/duration-0.2.1.tbz"
   ]
   [
-    "eio.0.2"
-    "https://github.com/ocaml-multicore/eio/releases/download/v0.2/eio_main-0.2.tbz"
+    "eio.0.6"
+    "https://github.com/ocaml-multicore/eio/releases/download/v0.6/eio-0.6.tbz"
   ]
   [
-    "eio_linux.0.2"
-    "https://github.com/ocaml-multicore/eio/releases/download/v0.2/eio_main-0.2.tbz"
+    "eio_linux.0.6"
+    "https://github.com/ocaml-multicore/eio/releases/download/v0.6/eio-0.6.tbz"
   ]
   [
-    "eio_luv.0.2"
-    "https://github.com/ocaml-multicore/eio/releases/download/v0.2/eio_main-0.2.tbz"
+    "eio_luv.0.6"
+    "https://github.com/ocaml-multicore/eio/releases/download/v0.6/eio-0.6.tbz"
   ]
   [
-    "eio_main.0.2"
-    "https://github.com/ocaml-multicore/eio/releases/download/v0.2/eio_main-0.2.tbz"
+    "eio_main.0.6"
+    "https://github.com/ocaml-multicore/eio/releases/download/v0.6/eio-0.6.tbz"
   ]
   [
     "ethernet.dev"
     "git+https://github.com/TheLortex/ethernet.git#7c19ae12b1cce1f00fbceb9b2b7bc413cf9f9b8e"
   ]
   [
-    "faraday.0.8.1"
-    "https://github.com/inhabitedtype/faraday/archive/0.8.1.tar.gz"
+    "faraday.0.8.2"
+    "https://github.com/inhabitedtype/faraday/archive/0.8.2.tar.gz"
   ]
   [
     "findlib.1.8.1+dune"
@@ -194,8 +200,12 @@ pin-depends: [
     "https://github.com/dune-universe/fmt/releases/download/v0.9.0%2Bdune/fmt-0.9.0.dune.tbz"
   ]
   [
+    "hmap.0.8.1+dune"
+    "https://github.com/dune-universe/hmap/releases/download/v0.8.1%2Bdune/hmap-0.8.1.dune.tbz"
+  ]
+  [
     "http.dev"
-    "git+https://github.com/mirage/ocaml-cohttp.git#5ee84489cf6755711d0e7c0f1365685a15cae468"
+    "git+https://github.com/mirage/ocaml-cohttp.git#884c18e194f93748d1f4b21c15279d937fcd7dac"
   ]
   [
     "httpaf.dev"
@@ -203,7 +213,7 @@ pin-depends: [
   ]
   [
     "integers.0.7.0"
-    "https://github.com/ocamllabs/ocaml-integers/archive/0.7.0.tar.gz"
+    "https://github.com/yallop/ocaml-integers/archive/0.7.0.tar.gz"
   ]
   [
     "ipaddr.5.3.1"
@@ -215,15 +225,15 @@ pin-depends: [
   ]
   [
     "lru.0.3.0.1~alpha-repo"
-    "git+https://github.com/samoht/lru#640e38772cb4718d99d897e25d0e1bf8b1f54f36"
+    "git+https://github.com/samoht/lru#cd23d36790d6a68b3cf46fea4056851d89ed60ad"
   ]
   [
-    "luv.0.5.11"
-    "https://github.com/aantron/luv/releases/download/0.5.11/luv-0.5.11.tar.gz"
+    "luv.dev"
+    "git+https://github.com/patricoferris/luv#cec35fce60cc5479867e097f6748814c95d825ba"
   ]
   [
     "luv_unix.0.5.0"
-    "https://github.com/aantron/luv/releases/download/0.5.11/luv-0.5.11.tar.gz"
+    "git+https://github.com/patricoferris/luv#cec35fce60cc5479867e097f6748814c95d825ba"
   ]
   ["lwt.5.6.1" "https://github.com/ocsigen/lwt/archive/5.6.1.tar.gz"]
   [
@@ -315,8 +325,8 @@ pin-depends: [
     "https://github.com/ocaml-ppx/ppx_derivers/archive/1.2.1.tar.gz"
   ]
   [
-    "ppxlib.0.27.0"
-    "https://github.com/ocaml-ppx/ppxlib/releases/download/0.27.0/ppxlib-0.27.0.tbz"
+    "ppxlib.0.25.1"
+    "https://github.com/ocaml-ppx/ppxlib/releases/download/0.25.1/ppxlib-0.25.1.tbz"
   ]
   [
     "psq.0.2.0"
@@ -352,10 +362,11 @@ pin-depends: [
     "https://github.com/mirage/ocaml-tuntap/releases/download/v2.0.0/tuntap-v2.0.0.tbz"
   ]
   [
-    "uring.0.3"
-    "https://github.com/ocaml-multicore/ocaml-uring/releases/download/v0.3/uring-0.3.tbz"
+    "uring.0.4"
+    "https://github.com/ocaml-multicore/ocaml-uring/releases/download/v0.4/uring-0.4.tbz"
   ]
 ]
+x-opam-monorepo-cli-args: ["--minimal-update"]
 x-opam-monorepo-duniverse-dirs: [
   [
     "https://erratique.ch/software/cmdliner/releases/cmdliner-1.1.1.tbz"
@@ -393,9 +404,9 @@ x-opam-monorepo-duniverse-dirs: [
     "mirage-tcpip"
   ]
   [
-    "https://github.com/aantron/luv/releases/download/0.5.11/luv-0.5.11.tar.gz"
-    "luv"
-    ["md5=efe61a4b4725d59901984022c02ef698"]
+    "https://github.com/aantron/bisect_ppx/archive/2.8.1.tar.gz"
+    "bisect_ppx"
+    ["md5=e8831e6e99292f221ded6fb02652e2a5"]
   ]
   [
     "https://github.com/c-cube/seq/archive/0.2.2.tar.gz"
@@ -411,6 +422,14 @@ x-opam-monorepo-duniverse-dirs: [
     [
       "sha256=844ce674b3146aaf9c14088a0b817cef10c7152054d3cc984543463da978ff81"
       "sha512=27765423f43bdfbbdee50906faad14ecf653aaf2fdfc4db6b94791460aa32f3a3490b9d0c1a04aa3ecb0ac4333ea7ce5054251a67a0d67b64f3eb6d737afbf93"
+    ]
+  ]
+  [
+    "https://github.com/dune-universe/hmap/releases/download/v0.8.1%2Bdune/hmap-0.8.1.dune.tbz"
+    "hmap"
+    [
+      "sha256=e1c87e4407c285caab596200b39983e43e932f6d67120087e2652548bcbb5a87"
+      "sha512=4bfba9c29a7751d0f19495f8c090400b556923611bf558ee6c5a8ea781499373865b176a84355c0b047cab8efbd1692ad45198422cc5267d36f21a137ce15364"
     ]
   ]
   [
@@ -461,11 +480,11 @@ x-opam-monorepo-duniverse-dirs: [
     ]
   ]
   [
-    "https://github.com/hannesm/duration/releases/download/0.2.0/duration-0.2.0.tbz"
+    "https://github.com/hannesm/duration/releases/download/v0.2.1/duration-0.2.1.tbz"
     "duration"
     [
-      "sha256=ad14fb75a5a6f73fff7ef1721178925ee555cf0f23b23e3ab329184bc0c1ce69"
-      "sha512=6a259ca406739bfc6020c7de767e39c2a7ee06169aa1966d43d426b2a54fc69b81be6465d04b9bd8fbbbbfd9ebe1c82a1cbfbf62100a37eb0f7403f6cf53e3b8"
+      "sha256=c738c1f38cfb99820c121cd3ddf819de4b2228f0d50eacbd1cc3ce99e7c71e2b"
+      "sha512=0de9e15c7d6188872ddd9994f08616c4a1822e4ac92724efa2c312fbb2fc44cd7cbe4b36bcf66a8451d510c1fc95de481760afbcacb8f83e183262595dcf5f0c"
     ]
   ]
   [
@@ -482,9 +501,16 @@ x-opam-monorepo-duniverse-dirs: [
     ["md5=0d8ceddeb7db821fd4e5235a75ae9752"]
   ]
   [
-    "https://github.com/inhabitedtype/faraday/archive/0.8.1.tar.gz"
+    "https://github.com/inhabitedtype/faraday/archive/0.8.2.tar.gz"
     "faraday"
-    ["md5=51b97f082af4679e3b428a03c3b657de"]
+    ["md5=307dccc4ea67ff0eeff394701d05bbe7"]
+  ]
+  [
+    "https://github.com/janestreet/base/archive/refs/tags/v0.15.1.tar.gz"
+    "base"
+    [
+      "sha256=755e303171ea267e3ba5af7aa8ea27537f3394d97c77d340b10f806d6ef61a14"
+    ]
   ]
   [
     "https://github.com/janestreet/ocaml-compiler-libs/releases/download/v0.12.4/ocaml-compiler-libs-v0.12.4.tbz"
@@ -510,10 +536,6 @@ x-opam-monorepo-duniverse-dirs: [
     "https://github.com/janestreet/sexplib0/archive/refs/tags/v0.15.1.tar.gz"
     "sexplib0"
     ["md5=ab8fd6273f35a792cad48cbb3024a7f9"]
-  ]
-  [
-    "git+https://github.com/kit-ty-kate/base#423dbad212f55506767d758b1ceb2d6e0ee8e7f5"
-    "base"
   ]
   [
     "https://github.com/mirage/bigarray-compat/releases/download/v1.1.0/bigarray-compat-1.1.0.tbz"
@@ -588,7 +610,7 @@ x-opam-monorepo-duniverse-dirs: [
     ]
   ]
   [
-    "git+https://github.com/mirage/ocaml-cohttp.git#5ee84489cf6755711d0e7c0f1365685a15cae468"
+    "git+https://github.com/mirage/ocaml-cohttp.git#884c18e194f93748d1f4b21c15279d937fcd7dac"
     "ocaml-cohttp"
   ]
   [
@@ -640,19 +662,19 @@ x-opam-monorepo-duniverse-dirs: [
     ]
   ]
   [
-    "https://github.com/ocaml-multicore/eio/releases/download/v0.2/eio_main-0.2.tbz"
+    "https://github.com/ocaml-multicore/eio/releases/download/v0.6/eio-0.6.tbz"
     "eio"
     [
-      "sha256=d09b63460ab8eb529b7e48c5a566ece58ae0d8f3c72ef6b55245cd8a8b3b304d"
-      "sha512=d644a0495923fc6c009d6ca95693ad93ed204604dcf84f43c68f3e83f4ab1bb6c4581c14b165ffaec2c194803a6dac38611e991133acdfc3388a7fa95a677d32"
+      "sha256=ead3eea352dd3d7d11a81ffdbeee6ca94d5e6b3f46de264b4e59689360b3ef38"
+      "sha512=0543643da7861f533f9b7ebee8aa30a6868b48ae1e19211666a9b860e9ff8d8a9e135f214a4603d0329f2027277701f6ffd900b6fba3405a538eebc301edaf29"
     ]
   ]
   [
-    "https://github.com/ocaml-multicore/ocaml-uring/releases/download/v0.3/uring-0.3.tbz"
+    "https://github.com/ocaml-multicore/ocaml-uring/releases/download/v0.4/uring-0.4.tbz"
     "ocaml-uring"
     [
-      "sha256=47c225fce95ad34dd38c35f30724f7d8111afd4370d301985abc720747c6d746"
-      "sha512=af093ea00aa57d02a32f27708a3a6ebc9e3b6d509ecbe0c88b0ba85ec57a23131c51c5009b40a3ef4a63568ad9d2793bff73e7cf7ba149b9ea5ce12b41d2aafa"
+      "sha256=7a321904b4159626bed79e8aa5be4a25bdba50941a6b8edff03868df9a118e5f"
+      "sha512=8197783d3aaad987578902dac1b47de5202efda97a521876247e4f087e37f92c08ed4bd7c2eeb23daf11bab5032e055fa70d62f39e877856e5654346da17cdd4"
     ]
   ]
   [
@@ -669,11 +691,11 @@ x-opam-monorepo-duniverse-dirs: [
     ["md5=5dc2bf130c1db3c731fe0fffc5648b41"]
   ]
   [
-    "https://github.com/ocaml-ppx/ppxlib/releases/download/0.27.0/ppxlib-0.27.0.tbz"
+    "https://github.com/ocaml-ppx/ppxlib/releases/download/0.25.1/ppxlib-0.25.1.tbz"
     "ppxlib"
     [
-      "sha256=764b96121d6ffd6a73820e0ec5235176bfc42b94cf2ff97e32d068a5c4b28c62"
-      "sha512=2dcce0be6acdb3e185bfdad2785303a405c617f99949316abe6793f785d7227c10795ca49e79290bd385873da635191b44e8a5c211de114a168846d5d26f505c"
+      "sha256=a51b3868029e62ff14a0f2bd8d278dacfc0c3fc5b22d484a296be90c53e4ffd7"
+      "sha512=6a6d9af49344e901cc9e6da7bcf38c2973705c8cee4cff1c64c0393e9ccc55a6abec1f58d5b56d0807939a3741bec722ee7bfc244f94619167a30438f182488a"
     ]
   ]
   [
@@ -693,11 +715,6 @@ x-opam-monorepo-duniverse-dirs: [
     ]
   ]
   [
-    "https://github.com/ocamllabs/ocaml-integers/archive/0.7.0.tar.gz"
-    "ocaml-integers"
-    ["md5=201cf24143d7cb9a3921d572b6e6c42c"]
-  ]
-  [
     "https://github.com/ocsigen/lwt/archive/5.6.1.tar.gz"
     "lwt"
     [
@@ -706,12 +723,16 @@ x-opam-monorepo-duniverse-dirs: [
     ]
   ]
   [
+    "git+https://github.com/patricoferris/luv#cec35fce60cc5479867e097f6748814c95d825ba"
+    "luv"
+  ]
+  [
     "https://github.com/pqwy/psq/releases/download/v0.2.0/psq-v0.2.0.tbz"
     "psq"
     ["md5=b94fb15f8878172bf58446b7d0fb7c1e"]
   ]
   [
-    "git+https://github.com/samoht/lru#640e38772cb4718d99d897e25d0e1bf8b1f54f36"
+    "git+https://github.com/samoht/lru#cd23d36790d6a68b3cf46fea4056851d89ed60ad"
     "lru"
   ]
   [
@@ -723,12 +744,29 @@ x-opam-monorepo-duniverse-dirs: [
     "httpaf"
   ]
   [
+    "https://github.com/yallop/ocaml-integers/archive/0.7.0.tar.gz"
+    "ocaml-integers"
+    ["md5=201cf24143d7cb9a3921d572b6e6c42c"]
+  ]
+  [
     "https://ocaml.janestreet.com/ocaml-core/v0.15/files/parsexp-v0.15.0.tar.gz"
     "parsexp"
     [
       "sha256=d1ee902b12ac7c0c888863025990d06845530fb75328454814e5ce5b6d43d193"
     ]
   ]
+]
+x-opam-monorepo-global-opam-vars: [
+  ["arch" "x86_64"]
+  ["os" "linux"]
+  ["os-distribution" "debian"]
+  ["os-family" "debian"]
+  ["os-version" "11"]
+]
+x-opam-monorepo-opam-repositories: [
+  "file://$OPAM_MONOREPO_CWD/repos/alpha"
+  "file://$OPAM_MONOREPO_CWD/repos/dune-universe"
+  "file://$OPAM_MONOREPO_CWD/repos/opam-repository"
 ]
 x-opam-monorepo-root-packages: ["mirage-monorepo"]
 x-opam-monorepo-version: "0.3"

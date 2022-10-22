@@ -105,36 +105,94 @@ module Open_how = struct
   let v ~open_flags ~perm ~resolve path = make open_flags perm resolve path
 end
 
-module Iovec = struct
-  (* The C stubs rely on the layout of Cstruct.t, so we just check here that it hasn't changed. *)
-  module Check : sig
-    [@@@warning "-34"]
-    type t = private {
-      buffer: (char, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t;
-      off   : int;
-      len   : int;
-    }
-  end = Cstruct
+module Op = Config.Op
 
-  type iovec
-  (* A C array of iovecs *)
+(* The C stubs rely on the layout of Cstruct.t, so we just check here that it hasn't changed. *)
+module Check_cstruct : sig
+  [@@@warning "-34"]
+  type t = private {
+    buffer: (char, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t;
+    off   : int;
+    len   : int;
+  }
+end = Cstruct
 
-  type t = iovec * int * Cstruct.t list
-  (* Note: we don't use the buffers list, but adding them here prevents them from being GC'd. *)
+(*
+ * A Sketch buffer is an area used to hold objects that remain alive
+ * until the next `Uring.submit`.
+ * For example an `iovec` must be passed to io_uring in `readv` and
+ * `writev`, once we call `Uring.submit` the `iovec` structures are
+ * copied by the kernel and we can release them, which we do.
+ *)
+module Sketch = struct
+  type t = {
+    mutable buffer : Cstruct.buffer;
+    mutable off : int;
+    mutable old_buffers : Cstruct.buffer list;
+  }
 
-  external make_iovec : Cstruct.t list -> int -> iovec = "ocaml_uring_make_iovec"
+  type ptr = Cstruct.buffer * int * int
 
-  let make buffers =
-    let len = List.length buffers in
-    let iovec = make_iovec buffers len in
-    (iovec, len, buffers)
+  let create_buffer len = Bigarray.(Array1.create char c_layout len)
+
+  let create () =
+    { buffer = Cstruct.empty.buffer; off = 0; old_buffers = [] }
+
+  let length t = Bigarray.Array1.size_in_bytes t.buffer
+
+  let round a x = (x + (a - 1)) land (lnot (a - 1))
+  let round = round (Sys.word_size / 8)
+
+  let avail t = (length t) - t.off
+
+  let alloc t alloc_len =
+    let alloc_len = round alloc_len in
+    if alloc_len > avail t then begin
+      (* At least 64 bytes, at least twice the previous size, and
+         at least big enough for the new allocation. *)
+      let new_size = max 64 (max (2 * length t) alloc_len) in
+      let new_buffer = create_buffer new_size in
+      t.old_buffers <- t.buffer :: t.old_buffers;
+      t.off <- 0;
+      t.buffer <- new_buffer;
+    end;
+    let off = t.off in
+    t.off <- t.off + alloc_len;
+    (t.buffer, off, alloc_len)
+
+  let _cstruct_of_ptr ((buf, off, len) : ptr) =
+    Cstruct.of_bigarray buf ~off ~len
+
+  let release t =
+    t.off <- 0;
+    t.old_buffers <- []
+
+  module Iovec = struct
+    external set : ptr -> Cstruct.t list -> unit = "ocaml_uring_set_iovec" [@@noalloc]
+
+    let sizeof = Config.sizeof_iovec
+
+    let alloc t csl =
+      let ptr = alloc t (List.length csl * sizeof) in
+      set ptr csl;
+      ptr
+  end
+
+  module String = struct
+    external set : ptr -> string -> unit = "ocaml_uring_set_string" [@@noalloc]
+
+    let alloc t s =
+      let ptr = alloc t (String.length s + 1) in
+      set ptr s;
+      ptr
+  end
 end
 
 (* Used for the sendmsg/recvmsg calls. Liburing doesn't support sendto/recvfrom at the time of writing. *)
 module Msghdr = struct
   type msghdr
-  type t = msghdr * Sockaddr.t option * Iovec.t
-  external make_msghdr : int -> Unix.file_descr list -> Sockaddr.t option -> Iovec.t-> msghdr = "ocaml_uring_make_msghdr"
+  type t = msghdr * Sockaddr.t option * Cstruct.t list (* `Cstruct.t list` is here only for preventing it being GCed *)
+  external make_msghdr : int -> Unix.file_descr list -> Sockaddr.t option -> msghdr = "ocaml_uring_make_msghdr"
   external get_msghdr_fds : msghdr -> Unix.file_descr list = "ocaml_uring_get_msghdr_fds"
 
   let get_fds (hdr, _, _) = get_msghdr_fds hdr
@@ -142,14 +200,17 @@ module Msghdr = struct
   (* Create a value with space for [n_fds] file descriptors.
      When sending, [fds] is used to fill those slots. When receiving, they can be left blank. *)
   let create_with_addr ~n_fds ~fds ?addr buffs =
-    let iovs = Iovec.make buffs in
-    make_msghdr n_fds fds addr iovs, addr, iovs
+    make_msghdr n_fds fds addr, addr, buffs
 
   let create ?(n_fds=0) ?addr buffs =
     create_with_addr ~n_fds ~fds:[] ?addr buffs
 end
 
 type 'a job = 'a Heap.entry
+
+type clock = Boottime | Realtime
+
+type probe
 
 module Uring = struct
   type t
@@ -159,15 +220,22 @@ module Uring = struct
 
   external unregister_buffers : t -> unit = "ocaml_uring_unregister_buffers"
   external register_bigarray : t ->  Cstruct.buffer -> unit = "ocaml_uring_register_ba"
-  external submit : t -> int = "ocaml_uring_submit"
+  external submit : t -> int = "ocaml_uring_submit" [@@noalloc]
+  external sq_ready : t -> int = "ocaml_uring_sq_ready" [@@noalloc]
+
+  external get_probe_ring : t -> probe = "ocaml_uring_get_probe_ring"
+  external opcode_supported : probe -> Op.t -> bool = "ocaml_uring_opcode_supported" [@@noalloc]
 
   type id = Heap.ptr
 
   type offset = Optint.Int63.t
   external submit_nop : t -> id -> bool = "ocaml_uring_submit_nop" [@@noalloc]
+  external submit_timeout : t -> id -> Sketch.ptr -> clock -> bool -> bool = "ocaml_uring_submit_timeout" [@@noalloc]
   external submit_poll_add : t -> Unix.file_descr -> id -> Poll_mask.t -> bool = "ocaml_uring_submit_poll_add" [@@noalloc]
-  external submit_readv : t -> Unix.file_descr -> id -> Iovec.t -> offset -> bool = "ocaml_uring_submit_readv" [@@noalloc]
-  external submit_writev : t -> Unix.file_descr -> id -> Iovec.t -> offset -> bool = "ocaml_uring_submit_writev" [@@noalloc]
+  external submit_read : t -> Unix.file_descr -> id -> Cstruct.t -> offset -> bool = "ocaml_uring_submit_read" [@@noalloc]
+  external submit_write : t -> Unix.file_descr -> id -> Cstruct.t -> offset -> bool = "ocaml_uring_submit_write" [@@noalloc]
+  external submit_readv : t -> Unix.file_descr -> id -> Sketch.ptr -> offset -> bool = "ocaml_uring_submit_readv" [@@noalloc]
+  external submit_writev : t -> Unix.file_descr -> id -> Sketch.ptr -> offset -> bool = "ocaml_uring_submit_writev" [@@noalloc]
   external submit_readv_fixed : t -> Unix.file_descr -> id -> Cstruct.buffer -> int -> int -> offset -> bool = "ocaml_uring_submit_readv_fixed_byte" "ocaml_uring_submit_readv_fixed_native" [@@noalloc]
   external submit_writev_fixed : t -> Unix.file_descr -> id -> Cstruct.buffer -> int -> int -> offset -> bool = "ocaml_uring_submit_writev_fixed_byte" "ocaml_uring_submit_writev_fixed_native" [@@noalloc]
   external submit_close : t -> Unix.file_descr -> id -> bool = "ocaml_uring_submit_close" [@@noalloc]
@@ -176,8 +244,9 @@ module Uring = struct
   external submit_accept : t -> id -> Unix.file_descr -> Sockaddr.t -> bool = "ocaml_uring_submit_accept" [@@noalloc]
   external submit_cancel : t -> id -> id -> bool = "ocaml_uring_submit_cancel" [@@noalloc]
   external submit_openat2 : t -> id -> Unix.file_descr -> Open_how.t -> bool = "ocaml_uring_submit_openat2" [@@noalloc]
-  external submit_send_msg : t -> id -> Unix.file_descr -> Msghdr.t -> bool = "ocaml_uring_submit_send_msg" [@@noalloc]
-  external submit_recv_msg : t -> id -> Unix.file_descr -> Msghdr.t -> bool = "ocaml_uring_submit_recv_msg" [@@noalloc]
+  external submit_unlinkat : t -> id -> Unix.file_descr -> Sketch.ptr -> bool -> bool = "ocaml_uring_submit_unlinkat" [@@noalloc]
+  external submit_send_msg : t -> id -> Unix.file_descr -> Msghdr.t -> Sketch.ptr -> bool = "ocaml_uring_submit_send_msg" [@@noalloc]
+  external submit_recv_msg : t -> id -> Unix.file_descr -> Msghdr.t -> Sketch.ptr -> bool = "ocaml_uring_submit_recv_msg" [@@noalloc]
 
   type cqe_option = private
     | Cqe_none
@@ -196,8 +265,8 @@ type 'a t = {
   uring: Uring.t;
   mutable fixed_iobuf: Cstruct.buffer;
   data : 'a Heap.t;
+  sketch : Sketch.t;
   queue_depth: int;
-  mutable dirty: bool; (* has outstanding requests that need to be submitted *)
 }
 
 module Generic_ring = struct
@@ -241,11 +310,17 @@ let create ?polling_timeout ~queue_depth () =
   let data = Heap.create queue_depth in
   let id = object end in
   let fixed_iobuf = Cstruct.empty.buffer in
-  let t = { id; uring; fixed_iobuf; data; dirty=false; queue_depth } in
+  let sketch = Sketch.create () in
+  let t = { id; uring; sketch; fixed_iobuf; data; queue_depth } in
   register_gc_root t;
   t
 
+let check t =
+  if Heap.is_released t.data then
+    invalid_arg "Can't use ring after Uring.exit has been called"
+
 let ensure_idle t op =
+  check t;
   match Heap.in_use t.data with
   | 0 -> ()
   | n -> Fmt.invalid_arg "%s: %d request(s) still active!" op n
@@ -263,18 +338,20 @@ let set_fixed_buffer t iobuf =
 
 let exit t =
   ensure_idle t "exit";
+  Heap.release t.data;
   Uring.exit t.uring;
   unregister_gc_root t
 
 let with_id_full : type a. a t -> (Heap.ptr -> bool) -> a -> extra_data:'b -> a job option =
  fun t fn datum ~extra_data ->
   match Heap.alloc t.data datum ~extra_data with
-  | exception Heap.No_space -> None
+  | exception Heap.No_space ->
+    check t;    (* Check if it's because we exited already. *)
+    None
   | entry ->
     let ptr = Heap.ptr entry in
     let has_space = fn ptr in
     if has_space then (
-      t.dirty <- true;
       Some entry
     ) else (
       ignore (Heap.free t.data ptr : a);
@@ -285,6 +362,13 @@ let with_id t fn a = with_id_full t fn a ~extra_data:()
 
 let noop t user_data =
   with_id t (fun id -> Uring.submit_nop t.uring id) user_data
+
+external set_timespec: Sketch.ptr -> int64 -> unit = "ocaml_uring_set_timespec" [@@noalloc]
+
+let timeout ?(absolute = false) t clock timeout_ns user_data =
+  let timespec_ptr = Sketch.alloc t.sketch Config.sizeof_kernel_timespec in
+  set_timespec timespec_ptr timeout_ns;
+  with_id t (fun id -> Uring.submit_timeout t.uring id timespec_ptr clock absolute) user_data
 
 let at_fdcwd : Unix.file_descr = Obj.magic Config.at_fdcwd
 
@@ -297,9 +381,24 @@ let openat2 t ~access ~flags ~perm ~resolve ?(fd=at_fdcwd) path user_data =
   let open_how = Open_how.v ~open_flags ~perm ~resolve path in
   with_id_full t (fun id -> Uring.submit_openat2 t.uring id fd open_how) user_data ~extra_data:open_how
 
+let unlink t ~dir ?(fd=at_fdcwd) path user_data =
+  with_id t (fun id ->
+      let buf = Sketch.String.alloc t.sketch path in
+      Uring.submit_unlinkat t.uring id fd buf dir
+    ) user_data
+
+let read t ~file_offset fd (buf : Cstruct.t) user_data =
+  with_id_full t (fun id -> Uring.submit_read t.uring fd id buf file_offset) user_data ~extra_data:buf
+
+let write t ~file_offset fd (buf : Cstruct.t) user_data =
+  with_id_full t (fun id -> Uring.submit_write t.uring fd id buf file_offset) user_data ~extra_data:buf
+
+let iov_max = Config.iov_max
+
 let readv t ~file_offset fd buffers user_data =
-  let iovec = Iovec.make buffers in
-  with_id_full t (fun id -> Uring.submit_readv t.uring fd id iovec file_offset) user_data ~extra_data:iovec
+  with_id_full t (fun id ->
+      let iovec = Sketch.Iovec.alloc t.sketch buffers in
+      Uring.submit_readv t.uring fd id iovec file_offset) user_data ~extra_data:buffers
 
 let read_fixed t ~file_offset fd ~off ~len user_data =
   with_id t (fun id -> Uring.submit_readv_fixed t.uring fd id t.fixed_iobuf off len file_offset) user_data
@@ -318,8 +417,9 @@ let write_chunk ?len t ~file_offset fd chunk user_data =
   with_id t (fun id -> Uring.submit_writev_fixed t.uring fd id t.fixed_iobuf off len file_offset) user_data
 
 let writev t ~file_offset fd buffers user_data =
-  let iovec = Iovec.make buffers in
-  with_id_full t (fun id -> Uring.submit_writev t.uring fd id iovec file_offset) user_data ~extra_data:iovec
+  with_id_full t (fun id ->
+      let iovec = Sketch.Iovec.alloc t.sketch buffers in
+      Uring.submit_writev t.uring fd id iovec file_offset) user_data ~extra_data:buffers
 
 let poll_add t fd poll_mask user_data =
   with_id t (fun id -> Uring.submit_poll_add t.uring fd id poll_mask) user_data
@@ -341,21 +441,42 @@ let send_msg ?(fds=[]) ?dst t fd buffers user_data =
   let addr = Option.map Sockaddr.of_unix dst in
   let n_fds = List.length fds in
   let msghdr = Msghdr.create_with_addr ~n_fds ~fds ?addr buffers in
-  with_id_full t (fun id -> Uring.submit_send_msg t.uring id fd msghdr) user_data ~extra_data:msghdr
+  (* NOTE: `msghdr` references `buffers`, so it's enough for `extra_data` *)
+  with_id_full t (fun id ->
+      let iovec = Sketch.Iovec.alloc t.sketch buffers in
+      Uring.submit_send_msg t.uring id fd msghdr iovec) user_data ~extra_data:msghdr
 
 let recv_msg t fd msghdr user_data =
-  with_id_full t (fun id -> Uring.submit_recv_msg t.uring id fd msghdr) user_data ~extra_data:msghdr
+  let _, _, buffers = msghdr in
+  (* NOTE: `msghdr` references `buffers`, so it's enough for `extra_data` *)
+  with_id_full t (fun id ->
+      let iovec = Sketch.Iovec.alloc t.sketch buffers in
+      Uring.submit_recv_msg t.uring id fd msghdr iovec) user_data ~extra_data:msghdr
 
 let cancel t job user_data =
   ignore (Heap.ptr job : Uring.id);  (* Check it's still valid *)
   with_id t (fun id -> Uring.submit_cancel t.uring id (Heap.ptr job)) user_data
 
+(* Free stale entries in the sketch buffer, if possible.
+   This isn't quite right: a busy system might never have 0 unsubmitted entries.
+   We should probably track how many requests need to be submitted before each
+   of [t.sketch.old_buffers] can be released, but this will do for now. *)
+let gc_sketch t =
+  if Uring.sq_ready t.uring = 0 then Sketch.release t.sketch
+
 let submit t =
-  if t.dirty then begin
-    t.dirty <- false;
-    Uring.submit t.uring
-  end else
-    0
+  check t;
+  let v =
+    if Uring.sq_ready t.uring > 0 then
+      Uring.submit t.uring
+    else
+      0
+  in
+  (* In non-polling mode, we will almost always be able to free the sketch buffer here.
+     However, in polling mode it's unlikely the entries have been consumed by the kernel yet,
+     and we must rely on other GC points. *)
+  gc_sketch t;
+  v
 
 type 'a completion_option =
   | None
@@ -368,15 +489,63 @@ let fn_on_ring fn t =
     let data = Heap.free t.data user_data_id in
     Some { result = res; data }
 
-let peek t = fn_on_ring Uring.peek_cqe t
+let get_cqe_nonblocking t =
+  check t;
+  gc_sketch t;
+  fn_on_ring Uring.peek_cqe t
+
+let peek = get_cqe_nonblocking
 
 let wait ?timeout t =
-  match timeout with
-  | None -> fn_on_ring Uring.wait_cqe t
-  | Some timeout -> fn_on_ring (Uring.wait_cqe_timeout timeout) t
+  check t;
+  let r =
+    match timeout with
+    | None -> fn_on_ring Uring.wait_cqe t
+    | Some timeout -> fn_on_ring (Uring.wait_cqe_timeout timeout) t
+  in
+  (* In polling mode, this is a good time to GC the sketch buffer, because the
+     kernel has probably consumed all the enties while we were blocking. *)
+  gc_sketch t;
+  r
 
 let queue_depth {queue_depth;_} = queue_depth
 let buf {fixed_iobuf;_} = fixed_iobuf
 
 let error_of_errno e =
   Uring.error_of_errno (abs e)
+
+let get_probe t =
+  check t;
+  Uring.get_probe_ring t.uring
+
+let op_supported probe op =
+  Uring.opcode_supported probe op
+
+module Stats = struct
+  type t = {
+    sqe_ready : int;
+    active_ops : int;
+    sketch_buffer_size : int;
+    sketch_used : int;
+    sketch_old_buffers : int;
+  }
+
+  let pp f { sqe_ready; active_ops; sketch_used; sketch_buffer_size; sketch_old_buffers } =
+    Fmt.pf f "@[<v>SQEs ready: %d@,\
+              Operations active: %d@,\
+              Sketch buffer: %d/%d (plus %d old buffers)@]"
+      sqe_ready
+      active_ops
+      sketch_used sketch_buffer_size sketch_old_buffers
+end
+
+let active_ops t = Heap.in_use t.data
+
+let get_debug_stats t =
+  { Stats.
+    sqe_ready = Uring.sq_ready t.uring;
+    active_ops = active_ops t;
+    sketch_used = t.sketch.off;
+    sketch_buffer_size = Bigarray.Array1.dim t.sketch.buffer;
+    sketch_old_buffers = List.length t.sketch.old_buffers;
+  }

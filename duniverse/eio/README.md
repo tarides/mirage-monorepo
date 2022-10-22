@@ -46,6 +46,10 @@ Eio replaces existing concurrency libraries such as Lwt
   * [Async](#async)
   * [Lwt](#lwt)
   * [Unix and System Threads](#unix-and-system-threads)
+* [Best Practices](#best-practices)
+  * [Switches](#switches-1)
+  * [Casting](#casting)
+  * [Passing Stdenv.t](#passing-stdenvt)
 * [Further Reading](#further-reading)
 
 <!-- vim-markdown-toc -->
@@ -78,7 +82,7 @@ Platform support:
 
 - Unix and macos: should be fully working using the libuv backend.
 - Linux: can additionally use io_uring for better performance on recent kernels.
-- Windows: should be mostly working - see [#123](https://github.com/ocaml-multicore/eio/issues/125) for remaining tasks.
+- Windows: should be mostly working - see [#125](https://github.com/ocaml-multicore/eio/issues/125) for remaining tasks.
 - MirageOS: waiting for [ocaml-freestanding](https://github.com/mirage/ocaml-freestanding) to be updated to OCaml 5.0.
 - Browsers: waiting for [js_of_ocaml](https://github.com/ocsigen/js_of_ocaml/issues/1088) to be updated to OCaml 5.0.
 
@@ -88,7 +92,7 @@ Feature status:
 - Multicore support: Working.
 - Networking: Clients and servers using TCP, UDP and Unix domain sockets work.
 - File-systems: Can create files and directories, load, save, parse, etc. Most other operations missing.
-- Spawning sub-processes: Not implemented yet.
+- Spawning sub-processes: Not implemented yet (see [#330](https://github.com/ocaml-multicore/eio/pull/330)).
 
 See [Awesome Multicore OCaml][] for links to work migrating other projects to Eio.
 
@@ -105,17 +109,17 @@ Remember that you can always fall back to using Lwt libraries to provide missing
 
 ## Getting OCaml 5.0
 
-You'll need OCaml 5.0.0~alpha0 or later.
+You'll need OCaml 5.0.0~beta1.
 You can either install it yourself or build the included [Dockerfile](./Dockerfile).
 
 To install it yourself:
 
 1. Make sure you have opam 2.1 or later (run `opam --version` to check).
 
-2. Use opam to install OCaml 5.0.0~alpha0 or later:
+2. Use opam to install OCaml 5.0.0~beta1:
 
    ```
-   opam switch create 5.0.0~alpha0 --repo=default,alpha=git+https://github.com/kit-ty-kate/opam-alpha-repository.git
+   opam switch create 5.0.0~beta1 --repo=default,alpha=git+https://github.com/kit-ty-kate/opam-alpha-repository.git
    ```
 
 ## Getting Eio
@@ -360,13 +364,6 @@ Every switch also creates a new cancellation context.
 You can use `Switch.fail` to mark the switch as failed and cancel all fibers within it.
 The exception (or exceptions) passed to `fail` will be raised by `run` when the fibers have exited.
 
-You can also use `Fiber.fork_sub` to create a child sub-switch.
-Turning off the parent switch will also turn off the child switch, but turning off the child doesn't disable the parent.
-
-For example, a web-server might use one switch for the whole server and then create one sub-switch for each incoming connection.
-This allows you to end all fibers handling a single connection by turning off that connection's switch,
-or to exit the whole application using the top-level switch.
-
 ## Design Note: Results vs Exceptions
 
 The OCaml standard library uses exceptions to report errors in most cases.
@@ -425,9 +422,9 @@ $ cat_ocaml_eio.exe  <dummy | pv >/dev/null
 ```
 
 `Eio.Flow.copy src dst` asks `dst` to copy from `src`.
-As `dst` here is a Unix file descriptor,
-it first calls the `probe` method on the `src` object to check whether it is too.
-Discovering that `src` is also a file descriptor, it switches to a faster code path optimised for that case.
+As `dst` here wraps a Unix file descriptor,
+it first calls the `probe` method on the `src` object to check whether it does too.
+Discovering that `src` is also wrapping a file descriptor, it switches to a faster code path optimised for that case.
 On my machine, this code path uses the Linux-specific `splice` system call for maximum performance.
 
 Note that not all cases are well-optimised yet, but the idea is for each backend to choose the most efficient way to implement the operation.
@@ -952,7 +949,7 @@ with the twist that another user might ask the cache for the value while it's st
 We don't want to start a second fetch in that case, so instead we just store promises in the cache:
 
 ```ocaml
-let make_cache ~sw fn =
+let make_cache fn =
   let tbl = Hashtbl.create 10 in
   fun key ->
     match Hashtbl.find_opt tbl key with
@@ -960,20 +957,13 @@ let make_cache ~sw fn =
     | None ->
       let p, r = Promise.create () in
       Hashtbl.add tbl key p;
-      Fiber.fork ~sw (fun () ->
-        match fn key with
-        | v -> Promise.resolve_ok r v
-        | exception ex -> Promise.resolve_error r ex
-      );
-      Promise.await_exn p
+      match fn key with
+      | v -> Promise.resolve_ok r v; v
+      | exception ex -> Promise.resolve_error r ex; raise ex
 ```
 
 Notice that we store the new promise in the cache immediately,
 without doing anything that might switch to another fiber.
-
-The reason for the `fork` here is to run the fetch inside the cache's switch `sw`.
-Then if the caller is cancelled it will only cancel the `Promise.await`, not the fetch
-(which might affect other users of the cache).
 
 We can use it like this:
 
@@ -981,33 +971,41 @@ We can use it like this:
 # let fetch url =
     traceln "Fetching %S..." url;
     Fiber.yield ();             (* Simulate work... *)
+    traceln "Got response for %S" url;
     if url = "http://example.com" then "<h1>Example.com</h1>"
     else failwith "404 Not Found";;
 val fetch : string -> string = <fun>
 
 # Eio_main.run @@ fun _ ->
-  Switch.run @@ fun sw ->
-  let c = make_cache ~sw fetch in
+  let c = make_cache fetch in
   let test url =
-    Fiber.fork ~sw (fun () ->
-       match c url with
-       | page -> traceln "%s -> %s" url page
-       | exception ex -> traceln "%s -> %a" url Fmt.exn ex
-    )
+    traceln "Requesting %s..." url;
+    match c url with
+    | page -> traceln "%s -> %s" url page
+    | exception ex -> traceln "%s -> %a" url Fmt.exn ex
   in
-  test "http://example.com";
-  test "http://example.com";
-  test "http://bad.com";
-  test "http://bad.com";;
+  Fiber.List.iter test [
+    "http://example.com";
+    "http://example.com";
+    "http://bad.com";
+    "http://bad.com";
+  ];;
++Requesting http://example.com...
 +Fetching "http://example.com"...
++Requesting http://example.com...
++Requesting http://bad.com...
 +Fetching "http://bad.com"...
++Requesting http://bad.com...
++Got response for "http://example.com"
 +http://example.com -> <h1>Example.com</h1>
-+http://example.com -> <h1>Example.com</h1>
++Got response for "http://bad.com"
 +http://bad.com -> Failure("404 Not Found")
++http://example.com -> <h1>Example.com</h1>
 +http://bad.com -> Failure("404 Not Found")
 - : unit = ()
 ```
 
+`Fiber.List.iter` is like `List.iter` but doesn't wait for each job to finish before starting the next.
 Notice that we made four requests, but only started two download operations.
 
 This version of the cache remembers failed lookups too.
@@ -1318,6 +1316,117 @@ This may be useful during the process of porting existing code to Eio.
 The [Eio_unix][] module provides features for using Eio with OCaml's Unix module.
 In particular, `Eio_unix.run_in_systhread` can be used to run a blocking operation in a separate systhread,
 allowing it to be used within Eio without blocking the whole domain.
+
+## Best Practices
+
+This section contains some recommendations for designing library APIs for use with Eio.
+
+### Switches
+
+A function should not take a switch argument if it could create one internally instead.
+
+Taking a switch indicates that a function creates resources that outlive the function call,
+and users seeing a switch argument will naturally wonder what these resources may be
+and what lifetime to give them, which is confusing if this is not needed.
+
+Creating the switch inside your function ensures that all resources are released
+promptly.
+
+```ocaml
+(* BAD - switch should be created internally instead *)
+let load_config ~sw path =
+  parse_config (Eio.Path.open_in ~sw path)
+
+(* GOOD - less confusing and closes file promptly *)
+let load_config path =
+  Switch.run @@ fun sw ->
+  parse_config (Eio.Path.open_in ~sw path)
+```
+
+Of course, you could use `with_open_in` in this case to simplify it further.
+
+### Casting
+
+Unlike many languages, OCaml does not automatically cast objects (polymorphic records) to super-types as needed.
+Remember to keep the type polymorphic in your interface so users don't need to do this manually.
+This is similar to the case with polymorphic variants (where APIs should use `[< ...]` or `[> ...]`).
+
+For example, if you need an `Eio.Flow.source` then users should be able to use a `Flow.two_way`
+without having to cast it first:
+
+<!-- $MDX skip -->
+```ocaml
+(* BAD - user must cast to use function: *)
+module Message : sig
+  type t
+  val read : Eio.Flow.source -> t
+end
+
+(* GOOD - a Flow.two_way can be used without casting: *)
+module Message : sig
+  type t
+  val read : #Eio.Flow.source -> t
+end
+```
+
+If you want to store the argument, this may require you to cast internally:
+
+```ocaml
+module Foo : sig
+  type t
+  val of_source : #Eio.Flow.source -> t
+end = struct
+  type t = {
+    src : Eio.Flow.source;
+  }
+
+  let of_source x = {
+    src = (x :> Eio.Flow.source);
+  }
+end
+```
+
+Note: the `#type` syntax only works on types defined by classes, whereas the slightly more verbose `<type; ..>` works on all object types.
+
+### Passing Stdenv.t
+
+The `env` value you get from `Eio_main.run` is a powerful capability,
+and programs are easier to understand when it's not passed around too much.
+
+In many cases, it's clearer (if a little more verbose) to take the resources you need as separate arguments, e.g.
+
+<!-- $MDX skip -->
+```ocaml
+module Status : sig
+  val check :
+    clock:#Eio.Time.clock ->
+    net:#Eio.Net.t ->
+    bool
+end
+```
+
+You can also provide a convenience function that takes an `env` too.
+Doing this is most appropriate if many resources are needed and
+your library is likely to be initialised right at the start of the user's application.
+
+In that case, be sure to request only the resources you need, rather than the full set.
+This makes it clearer what you library does, makes it easier to test,
+and allows it to be used on platforms without the full set of OS resources.
+If you define the type explicitly, you can describe why you need each resource there:
+
+<!-- $MDX skip -->
+```ocaml
+module Status : sig
+  type 'a env = <
+    net : #Eio.Net.t;             (** To connect to the servers *)
+    clock : #Eio.Time.clock;      (** Needed for timeouts *)
+    ..
+  > as 'a
+
+  val check : _ env -> bool
+end
+```
+
 
 ## Further Reading
 

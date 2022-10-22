@@ -1,3 +1,82 @@
+## v0.6
+
+Changes:
+
+- Update to OCaml 5.0.0~beta1 (@anmonteiro @talex5 #346).
+
+- Add API for seekable read/writes (@nojb #307).
+
+- Add `Flow.write` (@haesbaert #318).  
+  This provides an optimised alternative to `copy` in the case where you are writing from a buffer.
+
+- Add `Net.with_tcp_connect` (@bikallem #302).  
+  Convenience function for opening a TCP connection.
+
+- Add `Eio.Time.Timeout` (@talex5 #320).  
+  Makes it easier to pass timeouts around.
+
+- Add `Eio_mock.Clock` (@talex5 #328).  
+  Control time in tests.
+
+- Add `Buf_read.take_while1` and `skip_while1` (@bikallem #309).  
+  These fail if no characters match.
+
+- Make the type parameter for `Promise.t` covariant (@anmonteiro #300).
+
+- Move list functions into a dedicated submodule (@raphael-proust #315).
+
+- Direct implementation of `Flow.source_string` (@c-cube #317).  
+  Slightly faster.
+
+Bug fixes:
+
+- `Condition.broadcast` must interlock as well (@haesbaert #324).
+
+- Split the reads into no more than 2^32-1 for luv (@haesbaert @talex5 @EduardoRFS #343).  
+  Luv uses a 32 bit int for buffer sizes and wraps if the value passed is too big.
+
+- eio_luv: allow `Net.connect` to be cancelled (@talex5 @nojb #311).
+
+- eio_main: Use dedicated log source (@anmonteiro #326).
+
+- linux_eio: fix kernel version number in log message (@talex5 @nojb #314).
+
+- Account for stack differences in the socketpair test (issue #312) (@haesbaert #313).
+
+Documentation:
+
+- Add Best Practices section to README (@talex5 #299).
+
+- Documentation improvements (@talex5 #295 #337).
+
+
+## v0.5
+
+New features:
+
+- Add `Eio.Condition` (@TheLortex @talex5 #277).  
+  Allows a fiber to wait for some condition to become true.
+
+- Add `Eio.Net.getaddrinfo` and `getnameinfo` (@bikallem @talex5 #278 #288 #291).  
+  Convert between host names and addresses.
+
+- Add `Eio.Debug` (@talex5 #276).  
+  Currently, this allows overriding the `traceln` function.
+
+- `Buf_write.create`: make switch optional (@talex5 #283).  
+  This makes things easier for people porting code from Faraday.
+
+Bug fixes:
+
+- Allow sharing of libuv poll handles (@patricoferris @talex5 #279).  
+  Luv doesn't allow two callers to watch the same file handle, so we need to handle that in Eio.
+
+Other changes:
+
+- Upgrade to uring 0.4 (@talex5 #290).
+
+- Mention `Mutex`, `Semaphore` and `Condition` in the README (@talex5 #281).
+
 ## v0.4
 
 Note: Eio 0.4 drops compatibility with OCaml 4.12+domains. Use OCaml 5.0.0~alpha1 instead.

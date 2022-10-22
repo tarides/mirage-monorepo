@@ -68,7 +68,7 @@ Exception: End_of_file.
 - : unit = ()
 ```
 
-Copying from src using a plain buffer (the default):
+Copying from a string src:
 
 ```ocaml
 # run @@ fun () ->
@@ -80,16 +80,41 @@ Copying from src using a plain buffer (the default):
 +dst: wrote "bar"
 - : unit = ()
 ```
+
+Copying from src using a plain buffer (the default):
+
+```ocaml
+# run @@ fun () ->
+  let src = Eio.Flow.cstruct_source [Cstruct.of_string "foobar"] in
+  let dst = Eio_mock.Flow.make "dst" in
+  Eio_mock.Flow.on_copy_bytes dst [`Return 3; `Return 5];
+  Eio.Flow.copy src dst;;
++dst: wrote "foo"
++dst: wrote "bar"
+- : unit = ()
+```
+
 Copying from src using `Read_source_buffer`:
 
 ```ocaml
 # run @@ fun () ->
-  let src = Eio.Flow.string_source "foobar" in
+  let src = Eio.Flow.cstruct_source [Cstruct.of_string "foobar"] in
   let dst = Eio_mock.Flow.make "dst" in
   Eio_mock.Flow.set_copy_method dst `Read_source_buffer;
   Eio_mock.Flow.on_copy_bytes dst [`Return 3; `Return 5];
   Eio.Flow.copy src dst;;
 +dst: wrote (rsb) ["foo"]
 +dst: wrote (rsb) ["bar"]
+- : unit = ()
+```
+
+## write
+
+```ocaml
+# run @@ fun () ->
+  let dst = Eio_mock.Flow.make "dst" in
+  Eio_mock.Flow.on_copy_bytes dst [`Return 6];
+  Eio.Flow.write dst [Cstruct.of_string "foobar"];;
++dst: wrote "foobar"
 - : unit = ()
 ```

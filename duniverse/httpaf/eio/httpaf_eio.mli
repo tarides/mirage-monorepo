@@ -42,7 +42,7 @@ module Server : sig
     : ?config : Httpaf.Config.t
     -> error_handler : (Eio.Net.Sockaddr.stream -> Server_connection.error_handler)
     -> (Eio.Net.Sockaddr.stream -> Server_connection.request_handler)
-    -> (sw:Switch.t -> #Eio.Flow.two_way -> Eio.Net.Sockaddr.stream -> unit)
+    -> (#Eio.Flow.two_way -> Eio.Net.Sockaddr.stream -> unit)
 end
 
 module Client : sig

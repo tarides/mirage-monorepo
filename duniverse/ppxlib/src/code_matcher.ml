@@ -43,15 +43,12 @@ struct
           let loc =
             { Location.loc_start = pos; loc_end = pos; loc_ghost = false }
           in
-          Error
-            ( Location.Error.createf ~loc "ppxlib: [@@@@@@%s] attribute missing"
-                (Attribute.Floating.name M.end_marker),
-              [] )
+          Location.raise_errorf ~loc "ppxlib: [@@@@@@%s] attribute missing"
+            (Attribute.Floating.name M.end_marker)
       | x :: l -> (
-          match Attribute.Floating.convert_res [ M.end_marker ] x with
-          | Ok None -> loop (x :: acc) l
-          | Ok (Some ()) -> Ok (List.rev acc, (M.get_loc x).loc_start)
-          | Error e -> Error e
+          match Attribute.Floating.convert [ M.end_marker ] x with
+          | None -> loop (x :: acc) l
+          | Some () -> (List.rev acc, (M.get_loc x).loc_start)
           | exception Failure _ -> loop (x :: acc) l)
     in
     loop [] l
@@ -141,8 +138,7 @@ struct
         match_loop ~end_pos ~mismatch_handler ~expected ~source
 
   let do_match ~pos ~expected ~mismatch_handler source =
-    let open Result in
-    extract_prefix ~pos source >>| fun (source, end_pos) ->
+    let source, end_pos = extract_prefix ~pos source in
     match_loop ~end_pos ~mismatch_handler ~expected ~source
 end
 
@@ -180,14 +176,5 @@ end)
 
 (*$*)
 
-let match_structure_res = Str.do_match
-
-let match_structure ~pos ~expected ~mismatch_handler l =
-  match_structure_res ~pos ~expected ~mismatch_handler l
-  |> Result.handle_error ~f:(fun (err, _) -> Location.Error.raise err)
-
-let match_signature_res = Sig.do_match
-
-let match_signature ~pos ~expected ~mismatch_handler l =
-  match_signature_res ~pos ~expected ~mismatch_handler l
-  |> Result.handle_error ~f:(fun (err, _) -> Location.Error.raise err)
+let match_structure = Str.do_match
+let match_signature = Sig.do_match

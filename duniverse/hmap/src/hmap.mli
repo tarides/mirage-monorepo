@@ -1,12 +1,12 @@
 (*---------------------------------------------------------------------------
    Copyright (c) 2016 Daniel C. Bünzli. All rights reserved.
    Distributed under the ISC license, see terms at the end of the file.
-   %%NAME%% %%VERSION%%
+   hmap v0.8.1+dune
   ---------------------------------------------------------------------------*)
 
 (** Heterogeneous value maps.
 
-    {e %%VERSION%% - {{:%%PKG_HOMEPAGE%% }homepage}} *)
+    {e v0.8.1+dune - {{:https://github.com/dune-universe/hmap }homepage}} *)
 
 (** {1:keys Keys} *)
 

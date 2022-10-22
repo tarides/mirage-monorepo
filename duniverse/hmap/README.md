@@ -1,6 +1,6 @@
 Hmap — Heterogeneous value maps for OCaml
 -------------------------------------------------------------------------------
-%%VERSION%%
+v0.8.1+dune
 
 Hmap provides heterogeneous value maps for OCaml. These maps bind keys
 to values with arbitrary types. Keys witness the type of the value

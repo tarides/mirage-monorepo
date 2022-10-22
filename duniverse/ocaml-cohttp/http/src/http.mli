@@ -202,8 +202,8 @@ module Header : sig
       name [k] and value [v]. *)
 
   val add : t -> string -> string -> t
-  (** [add h k v] adds the header name [k] and it associated value [v] at the
-      end of header list [h]. *)
+  (** [add h k v] adds the header name [k] and its associated value [v] at the
+      front of header list [h]. *)
 
   val add_list : t -> (string * string) list -> t
   (** [add_list h l] adds in order all header pairs contained in [l] to the
@@ -366,6 +366,15 @@ module Header : sig
     val caseless_equal : string -> string -> bool
     (** [caseless_equal a b] must be equivalent to
         [String.equal (String.lowercase_ascii a) (String.lowercase_ascii b)]. *)
+
+    val first : t -> (string * string) option
+    (** [first t] is [Some (hdr_name, hdr_value)], which represents the first
+        header in headers list [t]. It is [None] if [t] is empty. *)
+
+    val move_to_front : t -> string -> t
+    (** [move_to_front t hdr_name] is [t] with header name [hdr_name] moved to
+        the front of the headers list [t]. If the header doesn't exist in [t] or
+        the header is already at the front, then [t] is unchanged. *)
   end
 end
 
@@ -391,6 +400,32 @@ module Request : sig
 
   val is_keep_alive : t -> bool
   (** Return true whether the connection should be reused *)
+
+  val requires_content_length : t -> bool
+  (** [requires_content_length t] is [true] if [t.meth] is one of
+      [`POST, `PUT or `PATCH]. Otherwise it is [false].
+
+      A [true] value indicates that a request must include a "Content-Length"
+      header.
+
+      See https://www.rfc-editor.org/rfc/rfc7230#section-3.3.2 *)
+
+  val content_length : t -> int option
+  (** [content_length t] is [Some x] if the "Content-Length" header in [t]
+      exists and its value [x] is a non negative integer, [x>=0]
+
+      It is [None] if [requires_content_length t = false] or the value encoded
+      in "Content-Length" is not a valid integer value, i.e [>= 0].
+
+      See https://www.rfc-editor.org/rfc/rfc7230#section-3.3.2 *)
+
+  val supports_chunked_trailers : t -> bool
+  (** [supports_chunked_trailers t] is [true] if [t] contains HTTP header "TE:
+      trailers". Otherwise it is [false]. *)
+
+  val add_te_trailers : t -> t
+  (** [add_te_trailers t] adds HTTP headers, 'TE' and 'Connection' to
+      indicate that a user-agent can handle HTTP chunked trailers headers. *)
 
   val make :
     ?meth:Method.t ->
@@ -436,6 +471,26 @@ module Response : sig
 
   val is_keep_alive : t -> bool
   (** Return true whether the connection should be reused *)
+
+  val requires_content_length : ?request_meth:Method.t -> t -> bool
+  (** [requires_content_length ~request_meth t] is [true] if a combination of
+      [t] and [request_meth] indicates that a response message must include
+      "Content-Length" header. However, please note exceptions to this:
+
+      - Response with status code of [304] may or may not include the header.
+      - Response to request with method [HEAD] may or may not include the
+        header.
+
+      https://www.rfc-editor.org/rfc/rfc7230#section-3.3.2 *)
+
+  val content_length : t -> int option
+  (** [content_length t] is [Some x] if the "Content-Length" header in [t]
+      exists and its value [x] is a non negative integer, [x>=0]
+
+      It is [None] if [requires_content_length t = false] or the value encoded
+      in "Content-Length" is not a valid integer value, i.e [>= 0].
+
+      See https://www.rfc-editor.org/rfc/rfc7230#section-3.3.2 *)
 
   val make :
     ?version:Version.t ->

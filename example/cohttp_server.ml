@@ -31,7 +31,7 @@ let text =
 
 open Cohttp_eio
 
-let app (req, _reader) =
+let app (req, _reader, _conn) =
   match Http.Request.resource req with
   | "/" -> Server.text_response text
   | "/html" -> Server.html_response text
@@ -44,5 +44,4 @@ let () =
     ignore "An HTTP/1.1 server";
 
   Eio_main.run @@ fun env ->
-  Eio.Switch.run @@ fun sw -> 
-  Server.run ~port:!port (env :> Eio.Stdenv.t) sw app
+  Server.run ~port:!port (env :> Eio.Stdenv.t) app

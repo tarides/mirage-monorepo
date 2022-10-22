@@ -67,7 +67,7 @@ let listener_thread v period_ns () =
   loop period_ns
 
 let t ~sw ~period_ns ~expire ~clock =
-  let notify = Eio.Stream.create 1 in
+  let notify = Eio.Stream.create ~label:"tcptimer" 1 in
   let v = {notify; expire; running = false; clock} in 
   Eio.Fiber.fork ~sw (listener_thread v period_ns);
   v

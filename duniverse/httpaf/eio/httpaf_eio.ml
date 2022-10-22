@@ -104,7 +104,8 @@ module Config = Httpaf.Config
 
 module Server = struct
   let create_connection_handler ?(config=Config.default) ~error_handler request_handler =
-    fun ~sw (socket : #Eio.Flow.two_way) client_addr ->
+    fun (socket : #Eio.Flow.two_way) client_addr ->
+      Switch.run @@ fun sw ->
       let module Server_connection = Httpaf.Server_connection in
       let request_handler = request_handler client_addr in
       let error_handler = error_handler client_addr in
